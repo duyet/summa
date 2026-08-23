@@ -239,6 +239,19 @@ pub fn github_token() -> Option<String> {
     }
 }
 
+/// Version reported by a summa binary (`summa --version` → "summa 0.1.2").
+pub fn binary_version(path: &Path) -> Option<String> {
+    let out = Command::new(path).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.split_whitespace()
+        .nth(1)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
     let repo = args
         .repo
@@ -249,6 +262,11 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
     let install_path = default_install_path();
     let state_path = default_state_path();
     let current_state = load_state(&state_path);
+    let current_version = if install_path.is_file() {
+        binary_version(&install_path)
+    } else {
+        None
+    };
     let current_sha = if install_path.is_file() {
         sha256_file(&install_path).ok()
     } else {
@@ -275,9 +293,10 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
     };
 
     println!(
-        "update: target={target} channel={} install={}",
+        "update: target={target} channel={} install={} current={}",
         channel.as_str(),
-        install_path.display()
+        install_path.display(),
+        current_version.as_deref().unwrap_or("not installed"),
     );
 
     let client = reqwest::Client::builder()
@@ -341,7 +360,8 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
             if let Some(cur) = &current_sha {
                 if !should_install(Some(cur), &st.sha256) {
                     println!(
-                        "update: already current ({} sha {})",
+                        "update: already current ({}, {} sha {})",
+                        current_version.as_deref().unwrap_or("unknown version"),
                         source,
                         &st.sha256[..12.min(st.sha256.len())]
                     );
@@ -384,10 +404,19 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
         }
     };
     let incoming_sha = sha256_file(&bin)?;
+    // Real version of the downloaded binary; falls back to the resolved tag/sha.
+    let incoming_version = binary_version(&bin)
+        .unwrap_or_else(|| {
+            if run_id.starts_with('v') {
+                run_id.clone()
+            } else {
+                format!("sha-{}", &head_sha[..12.min(head_sha.len())])
+            }
+        });
 
     if !should_install(current_sha.as_deref(), &incoming_sha) {
         let state = InstallState {
-            source,
+            source: source.clone(),
             run_id: 0,
             head_sha,
             target,
@@ -396,7 +425,12 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
             channel: Some(channel.as_str().to_string()),
         };
         save_state(&state_path, &state)?;
-        println!("update: already current (same sha256)");
+        println!(
+            "update: already current ({}, {} sha {})",
+            incoming_version,
+            source,
+            &state.sha256[..12.min(state.sha256.len())]
+        );
         return Ok(());
     }
 
@@ -414,8 +448,9 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
     };
     save_state(&state_path, &state)?;
     println!(
-        "update: installed {} (channel {} sha {})",
+        "update: installed {} ({} channel {} sha {})",
         install_path.display(),
+        incoming_version,
         channel.as_str(),
         &incoming_sha[..12]
     );
@@ -956,6 +991,27 @@ mod tests {
         let c = UpdateArgs::parse_from(["update"]);
         assert_eq!(c.channel_override(), None);
         assert!(UpdateArgs::try_parse_from(["update", "--beta", "--stable"]).is_err());
+    }
+
+    #[test]
+    fn binary_version_parses_summa_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = tmp.path().join("summa");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(&fake, "#!/bin/sh\necho \"summa 9.9.9\"\n").unwrap();
+            let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake, perms).unwrap();
+            assert_eq!(
+                binary_version(&fake).as_deref(),
+                Some("9.9.9"),
+                "version parsed from --version output"
+            );
+        }
+        // Missing/invalid binary → None.
+        assert_eq!(binary_version(&tmp.path().join("nope")), None);
     }
 
     #[test]
