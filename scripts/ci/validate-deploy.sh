@@ -59,6 +59,7 @@ mkdir -p "$www/beta/${asset}"
 printf '#!/bin/sh\necho summa 0.0.0-ci\n' > "$www/beta/${asset}/summa"
 chmod +x "$www/beta/${asset}/summa"
 tar -C "$www/beta" -czf "$www/beta/${asset}.tar.gz" "$asset"
+shasum -a 256 "$www/beta/${asset}.tar.gz" > "$www/beta/${asset}.tar.gz.sha256"
 cp install.sh "$www/install.sh"
 portfile="$tmp/http.port"
 python3 - "$www" "$portfile" <<'PY' &

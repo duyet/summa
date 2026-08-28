@@ -196,6 +196,30 @@ main() {
     exit 1
   fi
 
+  # Verify the sha256 sidecar when the remote publishes one; older tags and
+  # mirrors may omit it, in which case we warn and continue unverified.
+  if ! curl_get "${url}.sha256" -o "${tmp}/summa.tar.gz.sha256" 2>/dev/null; then
+    warn "no sha256 sidecar at ${url}.sha256 — skipping checksum verification"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    local expected actual
+    expected="$(awk '{print $1}' "${tmp}/summa.tar.gz.sha256")"
+    actual="$(sha256sum "${tmp}/summa.tar.gz" | awk '{print $1}')"
+    if [ "$actual" != "$expected" ]; then
+      die "checksum mismatch for ${asset}.tar.gz (expected ${expected}, got ${actual})"
+    fi
+    info "checksum verified (sha256 ${actual})"
+  elif command -v shasum >/dev/null 2>&1; then
+    local expected actual
+    expected="$(awk '{print $1}' "${tmp}/summa.tar.gz.sha256")"
+    actual="$(shasum -a 256 "${tmp}/summa.tar.gz" | awk '{print $1}')"
+    if [ "$actual" != "$expected" ]; then
+      die "checksum mismatch for ${asset}.tar.gz (expected ${expected}, got ${actual})"
+    fi
+    info "checksum verified (sha256 ${actual})"
+  else
+    warn "no sha256sum/shasum available — skipping checksum verification"
+  fi
+
   tar -xzf "${tmp}/summa.tar.gz" -C "${tmp}"
   found="$(find "${tmp}" -type f -name "${BIN_NAME}" -print)"
   [ -n "$found" ] || die "archive did not contain ${BIN_NAME}"
