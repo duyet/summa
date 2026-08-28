@@ -79,6 +79,7 @@ jobs:
         HOME_DIR="$(mktemp -d)"
         mkdir -p "$WWW/beta"
         cp dist/summa-x86_64-unknown-linux-gnu.tar.gz "$WWW/beta/"
+        cp dist/summa-x86_64-unknown-linux-gnu.tar.gz.sha256 "$WWW/beta/"
         cp install.sh "$WWW/install.sh"
         python3 - "$WWW" "$PORTFILE" <<'PY' &
         import http.server, os, socketserver, sys
