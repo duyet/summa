@@ -45,8 +45,13 @@ need_sha256() {
 }
 
 # First field of a GNU `shasum -a 256` sidecar (`<hex>  dist/<asset>.tar.gz`).
+# Exactly one non-empty record; extra lines fail closed.
 parse_sha256_sidecar() {
-  local sidecar="$1" hex
+  local sidecar="$1" hex n
+  n="$(tr -d '\r' < "$sidecar" | awk 'NF { n++ } END { print n+0 }')"
+  if [ "$n" -ne 1 ]; then
+    die "malformed checksum file ${sidecar}: expected exactly one checksum record, got ${n}"
+  fi
   hex="$(tr -d '\r' < "$sidecar" | awk 'NF { print $1; exit }')"
   hex="$(printf '%s' "$hex" | tr '[:upper:]' '[:lower:]')"
   if [ "${#hex}" -ne 64 ]; then
