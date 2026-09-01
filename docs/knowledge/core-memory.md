@@ -22,6 +22,7 @@ rg -n "<symbol>" apps/cli/src apps/cli/tests -g '!**/*.test.ts' -g '!**/*.spec.t
 - `src/scripts/setup-cronjob.ts` must write crontab via stdin (`crontab -`), not shell-quoted `echo`.
 - Rust `summa cronjob`: generate+register launchd / systemd --user / crontab. Crontab updates go through `crontab -` stdin (never `/tmp` + `crontab file`). Status reports legacy `run-import.sh` lines; `--replace` removes them.
 - Keep sink dedup delete filters SQL-escaped in both ClickHouse and DuckDB sinks.
+- CLI ClickHouse import writes via staging table `ccusage_events__swap` + `EXCHANGE TABLES` (never scoped `ALTER DELETE` then insert). Live `ccusage_events` is unchanged until the exchange. Telemetry ingest is insert-only (`ReplacingMergeTree(updated_at)`). <!-- pragma: allowlist secret -->
 - Companion (`codex`/`opencode`) totals must avoid cache double-count: `total_tokens = inputTokens + outputTokens`.
 - Claude totals must keep cache components separate: `total_tokens = input + output + cacheCreation + cacheRead`.
 - **Rust serde must alias ccusage camelCase** (`inputTokens`, `totalTokens`, `cacheCreationTokens`, `cacheReadTokens`, `modelsUsed`, `modelBreakdowns`). Missing aliases silently zero tokens while `totalCost` still parses → burn.duyet.net “0 tokens / $cost” daily bars (hit ~2026-07-10 after Rust import path). Regression tests in `parser::types` + `parser::rows`.
