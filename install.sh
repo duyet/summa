@@ -37,6 +37,54 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+need_sha256() {
+  if command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1; then
+    return 0
+  fi
+  die "required command not found: sha256sum or shasum (needed to verify the release digest)"
+}
+
+# First field of a GNU `shasum -a 256` sidecar (`<hex>  dist/<asset>.tar.gz`).
+parse_sha256_sidecar() {
+  local sidecar="$1" hex
+  hex="$(tr -d '\r' < "$sidecar" | awk 'NF { print $1; exit }')"
+  hex="$(printf '%s' "$hex" | tr '[:upper:]' '[:lower:]')"
+  if [ "${#hex}" -ne 64 ]; then
+    die "malformed checksum file ${sidecar}: expected 64 hex chars (GNU shasum -a 256), got '${hex:-empty}'"
+  fi
+  case "$hex" in
+    *[!0-9a-f]*)
+      die "malformed checksum file ${sidecar}: expected 64 hex chars (GNU shasum -a 256), got '${hex}'"
+      ;;
+  esac
+  printf '%s\n' "$hex"
+}
+
+file_sha256() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+  else
+    shasum -a 256 "$file" | awk '{print $1}'
+  fi | tr '[:upper:]' '[:lower:]'
+}
+
+# Sidecar names dist/<asset>.tar.gz; compare the hex only against the local archive.
+verify_archive() {
+  local archive="$1" sidecar="$2" label="$3"
+  local expected actual
+  [ -s "$sidecar" ] || die "checksum file empty (${sidecar}). CI publishes ${label}.sha256 next to every tarball."
+  expected="$(parse_sha256_sidecar "$sidecar")"
+  actual="$(file_sha256 "$archive")"
+  if [ -z "$actual" ]; then
+    die "failed to hash ${archive}"
+  fi
+  if [ "$actual" != "$expected" ]; then
+    die "checksum mismatch for ${label} (expected ${expected}, got ${actual}). Refusing to install."
+  fi
+  info "checksum ok (${actual})"
+}
+
 curl_get() {
   curl -fsSL -A "${USER_AGENT}" "$@"
 }
@@ -161,21 +209,24 @@ main() {
   need_cmd mkdir
   need_cmd tar
   need_cmd curl
+  need_sha256
 
-  local target asset url tmp found
+  local target asset url checksum_url tmp found
   target="$(detect_target)"
   asset="summa-${target}"
   VERSION="$(resolve_version "$asset")"
   url="$(asset_url "$VERSION" "$asset")"
+  checksum_url="${url}.sha256"
 
   info "summa installer"
   info "  version : ${VERSION}"
   info "  target  : ${target}"
   info "  install : ${INSTALL_DIR}/${BIN_NAME}"
   info "  url     : ${url}"
+  info "  checksum: ${checksum_url}"
 
   if [ "$DRY_RUN" = "1" ] || [ "$DRY_RUN" = "true" ]; then
-    info "dry-run: would download and install ${BIN_NAME} → ${INSTALL_DIR}"
+    info "dry-run: would download, verify sha256, and install ${BIN_NAME} → ${INSTALL_DIR}"
     mkdir -p "${INSTALL_DIR}"
     info "dry-run: install dir ready (${INSTALL_DIR})"
     exit 0
@@ -195,6 +246,11 @@ main() {
     warn "Do not cargo build --release on this machine."
     exit 1
   fi
+
+  if ! curl_get "$checksum_url" -o "${tmp}/summa.tar.gz.sha256"; then
+    die "checksum not found at ${checksum_url}. CI publishes a .sha256 sidecar next to every tarball; install will not proceed without it."
+  fi
+  verify_archive "${tmp}/summa.tar.gz" "${tmp}/summa.tar.gz.sha256" "${asset}.tar.gz"
 
   tar -xzf "${tmp}/summa.tar.gz" -C "${tmp}"
   found="$(find "${tmp}" -type f -name "${BIN_NAME}" -print)"
