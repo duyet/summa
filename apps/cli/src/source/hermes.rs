@@ -30,6 +30,8 @@ pub struct HermesSourceOptions {
     pub since: Option<String>,
     pub end_date: Option<String>,
     pub import_id: String,
+    /// Override Hermes home (tests). When None, uses `HERMES_HOME` or `~/.hermes`.
+    pub base_dir: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +67,7 @@ impl DataSource for HermesSource {
             since,
             end_date,
             import_id,
+            base_dir,
         } = &self.opts;
 
         let effective_since = if let Some(s) = since {
@@ -80,10 +83,15 @@ impl DataSource for HermesSource {
             None
         };
 
-        let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let base_dir = env::var("HERMES_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home_dir.join(".hermes"));
+        let base_dir = if let Some(d) = base_dir {
+            d.clone()
+        } else if let Ok(h) = env::var("HERMES_HOME") {
+            PathBuf::from(h)
+        } else {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(".hermes")
+        };
         let db_path = base_dir.join("state.db");
 
         let mut events: Vec<EventRow> = Vec::new();
@@ -392,6 +400,7 @@ mod tests {
             since: None,
             end_date: None,
             import_id: "".into(),
+            base_dir: None,
         });
         assert_eq!(src.name(), "hermes");
     }
@@ -419,8 +428,6 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let prev_home = env::var("HERMES_HOME").ok();
-        env::set_var("HERMES_HOME", tmp.path());
         let src = HermesSource::new(HermesSourceOptions {
             machine_name: "duet-ubuntu-hermes".into(),
             hash_projects: false,
@@ -429,12 +436,9 @@ mod tests {
             since: None,
             end_date: None,
             import_id: "test-import".into(),
+            base_dir: Some(tmp.path().to_path_buf()),
         });
         let result = futures::executor::block_on(async move { src.fetch().await }).unwrap();
-        match prev_home {
-            Some(v) => env::set_var("HERMES_HOME", v),
-            None => env::remove_var("HERMES_HOME"),
-        }
 
         assert!(result.error.is_none(), "{:?}", result.error);
         let sessions: Vec<_> = result
@@ -456,9 +460,7 @@ mod tests {
 
     #[test]
     fn test_fetch_returns_ok_when_missing_db() {
-        let orig_home = env::var("HOME").ok();
-        env::set_var("HOME", "/nonexistent/hermes-test-home");
-
+        let tmp = tempfile::tempdir().unwrap();
         let src = HermesSource::new(HermesSourceOptions {
             machine_name: "m1".into(),
             hash_projects: false,
@@ -467,14 +469,9 @@ mod tests {
             since: None,
             end_date: None,
             import_id: "".into(),
+            base_dir: Some(tmp.path().join("missing-hermes")),
         });
         let result = futures::executor::block_on(async move { src.fetch().await });
-
-        if let Some(h) = orig_home {
-            env::set_var("HOME", h);
-        } else {
-            env::remove_var("HOME");
-        }
 
         assert!(result.is_ok());
         let r = result.unwrap();

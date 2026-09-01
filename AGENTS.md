@@ -15,7 +15,7 @@ Docs index: `docs/INDEX.md` (core memory: `docs/knowledge/core-memory.md`).
 bun run check                           # CLI cargo check + API wasm check
 bun run build:cli                       # cargo build --locked --bin summa (not --release)
 bun run build:api                       # Worker typecheck
-bun run test                            # CLI + API cargo test --test-threads=1
+bun run test                            # CLI + API cargo test (CLI env tests hold EnvLock)
 bun run test:deploy                     # install.sh / k8s / wrangler / release-please
 bun run deploy:api                      # wrangler deploy (apps/api)
 cargo test --locked -p summa-import     # CLI tests

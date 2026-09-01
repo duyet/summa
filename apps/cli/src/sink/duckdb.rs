@@ -12,6 +12,14 @@ pub struct DuckDbSink {
     is_motherduck: bool,
 }
 
+fn append_motherduck_token(db_path: &str, token: &str) -> String {
+    if token.is_empty() {
+        return db_path.to_string();
+    }
+    let sep = if db_path.contains('?') { '&' } else { '?' };
+    format!("{db_path}{sep}motherduck_token={token}")
+}
+
 impl DuckDbSink {
     pub fn new(db_path: impl Into<String>) -> Self {
         let db_path = db_path.into();
@@ -33,11 +41,7 @@ impl DuckDbSink {
             return self.db_path.clone();
         }
         let token = std::env::var("MOTHERDUCK_TOKEN").unwrap_or_default();
-        if token.is_empty() {
-            return self.db_path.clone();
-        }
-        let sep = if self.db_path.contains('?') { '&' } else { '?' };
-        format!("{}{}motherduck_token={}", self.db_path, sep, token)
+        append_motherduck_token(&self.db_path, &token)
     }
 
     fn duckdb_create_sql() -> &'static str {
@@ -467,12 +471,15 @@ mod tests {
 
     #[test]
     fn motherduck_connection_string_appends_token() {
-        std::env::set_var("MOTHERDUCK_TOKEN", "test-token-xyz");
-        let sink = DuckDbSink::new("md:ccusage");
-        let cs = sink.connection_string();
-        assert!(cs.starts_with("md:ccusage"));
-        assert!(cs.contains("motherduck_token=test-token-xyz"));
-        std::env::remove_var("MOTHERDUCK_TOKEN");
+        assert_eq!(
+            append_motherduck_token("md:ccusage", "test-token-xyz"),
+            "md:ccusage?motherduck_token=test-token-xyz"
+        );
+        assert_eq!(
+            append_motherduck_token("md:ccusage?x=1", "tok"),
+            "md:ccusage?x=1&motherduck_token=tok"
+        );
+        assert_eq!(append_motherduck_token("md:ccusage", ""), "md:ccusage");
     }
 
     #[test]
