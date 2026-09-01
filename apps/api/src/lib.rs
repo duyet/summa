@@ -8,8 +8,8 @@ mod types;
 
 use analytics::{analytics_window, load_points, summarize};
 use auth::{
-    auth_error_response, is_owner_account, list_api_keys, mint_api_key, opt_var, require_api_key,
-    require_session, revoke_api_key,
+    auth_error_response, is_owner_account, list_api_keys, mint_api_key, opt_var,
+    public_error_for_worker, require_api_key, require_session, revoke_api_key,
 };
 use sinks::{collect_pings, fanout_write};
 use types::{
@@ -27,9 +27,10 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     let public = matches!(req.path().as_str(), "/" | "/health" | "/install.sh");
     match route(req, env).await {
         Ok(res) => apply_cors(origin.as_deref(), public, res),
-        Err(_) => {
-            let res = Response::from_json(&serde_json::json!({"error": "internal error"}))?
-                .with_status(500);
+        Err(e) => {
+            let (status, error) = public_error_for_worker(&e.to_string());
+            let res =
+                Response::from_json(&serde_json::json!({ "error": error }))?.with_status(status);
             apply_cors(origin.as_deref(), public, res)
         }
     }
