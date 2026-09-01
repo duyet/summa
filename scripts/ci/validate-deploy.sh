@@ -213,6 +213,7 @@ must_ignore = [
     "credentials.toml",
     "credentials.toml.bak",
     "summa.credentials.toml",
+    "apps/other/examples/credentials.toml",
 ]
 must_not_ignore = [
     ".env.example",
@@ -233,7 +234,7 @@ tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
 
 def forbidden_tracked(path: str) -> bool:
     name = path.rsplit("/", 1)[-1]
-    under_examples = "/examples/" in f"/{path}" or path.startswith("examples/")
+    known_template = path == "apps/cli/examples/credentials.toml"
     if name == ".env":
         return True
     if name.startswith(".env.") and name != ".env.example":
@@ -244,7 +245,7 @@ def forbidden_tracked(path: str) -> bool:
         return True
     if name.endswith(".bak"):
         return True
-    if name in {"credentials.toml", "summa.credentials.toml"} and not under_examples:
+    if name in {"credentials.toml", "summa.credentials.toml"} and not known_template:
         return True
     return False
 
