@@ -31,8 +31,8 @@ jobs:
       run: cargo check --locked -p summa-import
 
     - name: cargo test -p summa-import
-      # Env-mutating config/credentials tests race under the default thread pool.
-      run: cargo test --locked -p summa-import -- --test-threads=1
+      # Env-mutating tests hold crate::test_env::EnvLock; the rest uses the default thread pool.
+      run: cargo test --locked -p summa-import
 
     - name: cargo package -p summa-import
       run: cargo package --locked -p summa-import --list | tee /tmp/summa-package.list
