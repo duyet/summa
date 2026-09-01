@@ -162,9 +162,8 @@ pub struct ParsedIngest {
 
 /// Parse `/v1/ingest` from raw bytes with `serde_json`.
 ///
-/// Worker `Request::json` uses `serde_wasm_bindgen` (JS numbers are f64), which
-/// rejects `u64` token fields and `null` strings as a hard error for the whole
-/// body. One bad row must not 500 or drop a 400-event chunk.
+/// Avoid Worker `Request::json` (`serde_wasm_bindgen`): a type mismatch or
+/// `null` string fails the whole body. Skip bad rows; keep sibling totals.
 pub fn parse_ingest_bytes(bytes: &[u8]) -> std::result::Result<ParsedIngest, IngestParseError> {
     if bytes.len() as u64 > MAX_INGEST_BYTES {
         return Err(IngestParseError::TooLarge);
@@ -709,6 +708,9 @@ mod tests {
         let empty = parse_ingest_bytes(br#"{"events":[]}"#).unwrap();
         assert!(empty.events.is_empty());
         assert_eq!(empty.rejected, 0);
+        let bare = parse_ingest_bytes(br#"{}"#).unwrap();
+        assert!(bare.events.is_empty());
+        assert_eq!(bare.rejected, 0);
     }
 
     #[test]
