@@ -61,10 +61,6 @@ pub fn extract_bearer(req: &Request) -> String {
     token_from_headers(x_summa.as_deref(), authorization.as_deref())
 }
 
-fn unauthorized() -> Result<Response> {
-    Response::from_json(&serde_json::json!({"error": "unauthorized"})).map(|r| r.with_status(401))
-}
-
 pub async fn require_api_key(
     req: &Request,
     env: &Env,
@@ -129,14 +125,39 @@ pub fn auth_error_status(err: AuthError) -> u16 {
     }
 }
 
-pub fn auth_error_response(err: AuthError) -> Result<Response> {
+pub fn auth_error_body(err: AuthError) -> &'static str {
     match err {
-        AuthError::Unauthorized => unauthorized(),
-        AuthError::Unavailable => Response::from_json(&serde_json::json!({
-            "error": "auth unavailable"
-        }))
-        .map(|r| r.with_status(auth_error_status(err))),
+        AuthError::Unauthorized => "unauthorized",
+        AuthError::Unavailable => "auth unavailable",
     }
+}
+
+/// Map leftover `worker::Error` strings (D1 deleted/misbound) to a public body.
+/// Never returns the original message — bindings and database ids stay off the wire.
+pub fn public_error_for_worker(msg: &str) -> (u16, &'static str) {
+    if is_store_failure(msg) {
+        (
+            auth_error_status(AuthError::Unavailable),
+            auth_error_body(AuthError::Unavailable),
+        )
+    } else {
+        (500, "internal error")
+    }
+}
+
+pub fn is_store_failure(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("auth unavailable")
+        || lower.contains("store unavailable")
+        || lower.contains("d1")
+        || (lower.contains("binding") && lower.contains("db"))
+        || (lower.contains("database")
+            && (lower.contains("deleted") || lower.contains("not found") || lower.contains("7404")))
+}
+
+pub fn auth_error_response(err: AuthError) -> Result<Response> {
+    Response::from_json(&serde_json::json!({ "error": auth_error_body(err) }))
+        .map(|r| r.with_status(auth_error_status(err)))
 }
 
 pub fn opt_secret(env: &Env, name: &str) -> String {
@@ -365,6 +386,32 @@ mod tests {
     #[test]
     fn auth_failures_are_not_500() {
         assert_eq!(auth_error_status(AuthError::Unauthorized), 401);
+        assert_eq!(auth_error_body(AuthError::Unauthorized), "unauthorized");
         assert_eq!(auth_error_status(AuthError::Unavailable), 503);
+        assert_eq!(auth_error_body(AuthError::Unavailable), "auth unavailable");
+    }
+
+    #[test]
+    fn missing_d1_does_not_leak_internals() {
+        let samples = [
+            "D1: D1Error { cause: JsValue(Error: D1 database 00000000-0000-0000-0000-000000000000 has been deleted.",
+            "Error 7404: The database could not be found",
+            "Binding `DB` not found",
+            "auth store unavailable",
+        ];
+        for sample in samples {
+            let (status, body) = public_error_for_worker(sample);
+            assert_eq!(status, 503, "{sample}");
+            assert_eq!(body, "auth unavailable");
+            let lower = body.to_ascii_lowercase();
+            assert!(!lower.contains("d1"), "{body}");
+            assert!(!lower.contains("deleted"), "{body}");
+            assert!(!lower.contains("7404"), "{body}");
+            assert!(!body.contains("00000000"), "{body}");
+            assert!(!body.contains('`'), "{body}");
+        }
+        let (status, body) = public_error_for_worker("wasm trap");
+        assert_eq!(status, 500);
+        assert_eq!(body, "internal error");
     }
 }
