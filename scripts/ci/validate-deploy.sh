@@ -190,3 +190,91 @@ ok "CI/release workflows pin -p summa-import"
 
 [[ -f apps/cli/README.md ]] || fail "apps/cli/README.md required for cargo package"
 ok "apps/cli README present for crates.io"
+
+python3 - <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+def ignored(path: str) -> bool:
+    return subprocess.run(
+        ["git", "check-ignore", "--no-index", "-q", path]
+    ).returncode == 0
+
+must_ignore = [
+    ".env",
+    ".env.bak",
+    ".env.local",
+    ".env.production",
+    ".env.backup",
+    ".dev.vars.bak",
+    "apps/api/.dev.vars.bak",
+    "credentials.toml",
+    "credentials.toml.bak",
+    "summa.credentials.toml",
+    "apps/other/examples/credentials.toml",
+]
+must_not_ignore = [
+    ".env.example",
+    "apps/api/.dev.vars.example",
+    "apps/cli/examples/credentials.toml",
+]
+failed = False
+for path in must_ignore:
+    if not ignored(path):
+        print(f"FAIL: {path} must be gitignored", file=sys.stderr)
+        failed = True
+for path in must_not_ignore:
+    if ignored(path):
+        print(f"FAIL: {path} must remain trackable", file=sys.stderr)
+        failed = True
+
+tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
+
+def forbidden_tracked(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    known_template = path == "apps/cli/examples/credentials.toml"
+    if name == ".env":
+        return True
+    if name.startswith(".env.") and name != ".env.example":
+        return True
+    if name == ".dev.vars":
+        return True
+    if name.startswith(".dev.vars.") and name != ".dev.vars.example":
+        return True
+    if name.endswith(".bak"):
+        return True
+    if name in {"credentials.toml", "summa.credentials.toml"} and not known_template:
+        return True
+    return False
+
+for path in tracked:
+    if forbidden_tracked(path):
+        print(f"FAIL: tracked secret-shaped path {path}", file=sys.stderr)
+        failed = True
+
+example = Path("apps/cli/examples/credentials.toml").read_text()
+if re.search(r"keep out of git", example, re.I):
+    print("FAIL: example credentials.toml must not say to keep the template out of git", file=sys.stderr)
+    failed = True
+placeholder = re.compile(
+    r"(?i)^(replace-me|change-me|changeme|change_me|.*[=]replace-me)$"
+)
+for i, line in enumerate(example.splitlines(), 1):
+    s = line.strip()
+    if not s or s.startswith("#") or "=" not in s:
+        continue
+    key, _, raw = s.partition("=")
+    val = raw.strip().strip('"').strip("'")
+    if not placeholder.match(val):
+        print(
+            f"FAIL: apps/cli/examples/credentials.toml:{i} key {key.strip()} is not a placeholder",
+            file=sys.stderr,
+        )
+        failed = True
+
+if failed:
+    sys.exit(1)
+print("ok: gitignore covers env/credential backups; example stays a placeholder template")
+PY
