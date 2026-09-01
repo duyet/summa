@@ -247,7 +247,7 @@ main() {
     exit 1
   fi
 
-  if ! curl_get "$checksum_url" -o "${tmp}/summa.tar.gz.sha256"; then
+  if ! curl_get "$checksum_url" -o "${tmp}/summa.tar.gz.sha256" 2>/dev/null; then
     die "checksum not found at ${checksum_url}. CI publishes a .sha256 sidecar next to every tarball; install will not proceed without it."
   fi
   verify_archive "${tmp}/summa.tar.gz" "${tmp}/summa.tar.gz.sha256" "${asset}.tar.gz"

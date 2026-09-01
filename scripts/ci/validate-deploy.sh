@@ -69,11 +69,11 @@ tar -C "$www/beta" -czf "$www/beta/${asset}.tar.gz" "$asset"
     sha256sum "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
   fi
 )
-mkdir -p "$www/mismatch" "$www/nochecksum"
-cp "$www/beta/${asset}.tar.gz" "$www/mismatch/"
-cp "$www/beta/${asset}.tar.gz" "$www/nochecksum/"
+mkdir -p "$www/mismatch/beta" "$www/nochecksum/beta"
+cp "$www/beta/${asset}.tar.gz" "$www/mismatch/beta/"
+cp "$www/beta/${asset}.tar.gz" "$www/nochecksum/beta/"
 printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "${asset}.tar.gz" \
-  > "$www/mismatch/${asset}.tar.gz.sha256"
+  > "$www/mismatch/beta/${asset}.tar.gz.sha256"
 cp install.sh "$www/install.sh"
 portfile="$tmp/http.port"
 python3 - "$www" "$portfile" <<'PY' &
@@ -112,11 +112,11 @@ got="$("$curl_bin/summa")"
 ok "curl | bash install.sh"
 
 run_install() {
-  local version="$1" dest="$2"
+  local prefix="$1" dest="$2"
   env \
-    HOME="$tmp/home-${version}" \
-    SUMMA_DOWNLOAD_BASE="http://127.0.0.1:${port}" \
-    SUMMA_VERSION="$version" \
+    HOME="$tmp/home-${prefix}" \
+    SUMMA_DOWNLOAD_BASE="http://127.0.0.1:${port}/${prefix}" \
+    SUMMA_VERSION=beta \
     SUMMA_INSTALL_DIR="$dest" \
     bash install.sh
 }
