@@ -125,12 +125,15 @@ pub fn sha256_sidecar_url(tarball_url: &str) -> String {
 }
 
 /// First field of a GNU `shasum -a 256` sidecar (`<hex>  dist/<asset>.tar.gz`).
+/// Exactly one non-empty record; extra lines (malformed or conflicting) fail closed.
 pub fn parse_sha256_sidecar(text: &str) -> anyhow::Result<String> {
-    let line = text
-        .lines()
-        .map(|l| l.trim().trim_end_matches('\r'))
-        .find(|l| !l.is_empty())
+    let mut records = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let line = records
+        .next()
         .ok_or_else(|| anyhow!("checksum file is empty"))?;
+    if records.next().is_some() {
+        bail!("malformed checksum file: expected exactly one checksum record");
+    }
     let hex = line
         .split_whitespace()
         .next()
@@ -964,6 +967,12 @@ mod tests {
         assert!(parse_sha256_sidecar("").is_err());
         assert!(parse_sha256_sidecar("not-a-hash  file.tar.gz\n").is_err());
         assert!(parse_sha256_sidecar("abc  file\n").is_err());
+        let extra = format!("{text}deadbeef  other.tar.gz\n");
+        assert!(parse_sha256_sidecar(&extra).is_err());
+        assert_eq!(
+            parse_sha256_sidecar(&format!("{text}\n\n")).unwrap(),
+            "3f97eacb7335bd7e91de18f5703050da387d88e12733b8c4f893105adc34489c"
+        );
     }
 
     #[test]

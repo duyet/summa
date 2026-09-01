@@ -69,11 +69,16 @@ tar -C "$www/beta" -czf "$www/beta/${asset}.tar.gz" "$asset"
     sha256sum "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
   fi
 )
-mkdir -p "$www/mismatch/beta" "$www/nochecksum/beta"
+mkdir -p "$www/mismatch/beta" "$www/nochecksum/beta" "$www/extra/beta"
 cp "$www/beta/${asset}.tar.gz" "$www/mismatch/beta/"
 cp "$www/beta/${asset}.tar.gz" "$www/nochecksum/beta/"
+cp "$www/beta/${asset}.tar.gz" "$www/extra/beta/"
 printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "${asset}.tar.gz" \
   > "$www/mismatch/beta/${asset}.tar.gz.sha256"
+{
+  cat "$www/beta/${asset}.tar.gz.sha256"
+  printf '%s  %s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "other.tar.gz"
+} > "$www/extra/beta/${asset}.tar.gz.sha256"
 cp install.sh "$www/install.sh"
 portfile="$tmp/http.port"
 python3 - "$www" "$portfile" <<'PY' &
@@ -150,6 +155,21 @@ printf '%s\n' "$nocheck_out"
 grep -q 'checksum not found' <<<"$nocheck_out" || fail "missing-sidecar error missing 'checksum not found'"
 [[ ! -x "$nochecksum_bin/summa" ]] || fail "missing-checksum install left a binary"
 ok "install.sh missing checksum is fatal"
+
+extra_bin="$tmp/extra-bin"
+mkdir -p "$extra_bin" "$tmp/home-extra"
+extra_out=""
+extra_rc=0
+if extra_out="$(run_install extra "$extra_bin" 2>&1)"; then
+  extra_rc=0
+else
+  extra_rc=$?
+fi
+printf '%s\n' "$extra_out"
+[ "$extra_rc" -ne 0 ] || fail "install.sh accepted a sidecar with extra records"
+grep -q 'exactly one checksum record' <<<"$extra_out" || fail "extra-record error missing 'exactly one checksum record'"
+[[ ! -x "$extra_bin/summa" ]] || fail "extra-record install left a binary"
+ok "install.sh extra checksum records are fatal"
 
 kill "$http_pid" >/dev/null 2>&1 || true
 wait "$http_pid" >/dev/null 2>&1 || true
