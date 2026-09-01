@@ -17,6 +17,8 @@ curl -fsSL https://summa.duyet.net/install.sh | SUMMA_SETUP_CRON=1 SUMMA_CRON_EV
 
 Env: `SUMMA_INSTALL_DIR`, `SUMMA_CHANNEL` (`beta` or `stable`), `SUMMA_VERSION` (a tag like `v0.1.1` overrides the channel), `SUMMA_DRY_RUN=1`, `SUMMA_TELEMETRY_TOKEN`. Switch channels and update with `summa update --beta|--stable`; enable auto-update with `summa config --set update.mode=auto`.
 
+CI publishes a GNU `shasum -a 256` sidecar next to every tarball (`summa-<target>.tar.gz.sha256`, first field is the digest; the filename is `dist/…`). `install.sh` and `summa update` download that sidecar, hash the archive, and **abort** if the sidecar is missing, malformed, or the digest does not match — then extract and replace the binary.
+
 ## 2. Config
 
 `~/.config/summa/config.toml` has no secrets. Tokens go in `credentials.toml`.

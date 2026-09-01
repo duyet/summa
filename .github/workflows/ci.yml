@@ -79,6 +79,7 @@ jobs:
         HOME_DIR="$(mktemp -d)"
         mkdir -p "$WWW/beta"
         cp dist/summa-x86_64-unknown-linux-gnu.tar.gz "$WWW/beta/"
+        cp dist/summa-x86_64-unknown-linux-gnu.tar.gz.sha256 "$WWW/beta/"
         cp install.sh "$WWW/install.sh"
         python3 - "$WWW" "$PORTFILE" <<'PY' &
         import http.server, os, socketserver, sys
@@ -101,7 +102,8 @@ jobs:
             SUMMA_DOWNLOAD_BASE="http://127.0.0.1:${PORT}" \
             SUMMA_VERSION=beta \
             SUMMA_INSTALL_DIR="$INSTALL_DIR" \
-            bash
+            bash | tee /tmp/summa-install.log
+        grep -q 'checksum ok' /tmp/summa-install.log
         "$INSTALL_DIR/summa" --version
         "$INSTALL_DIR/summa" --help >/dev/null
 

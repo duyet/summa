@@ -45,6 +45,7 @@ out="$(
 printf '%s\n' "$out"
 echo "$out" | grep -q 'dry-run: would download' || fail "install.sh dry-run missing marker"
 echo "$out" | grep -q 'releases/download/v0.1.1/summa-' || fail "install.sh dry-run missing release URL"
+echo "$out" | grep -q '.tar.gz.sha256' || fail "install.sh dry-run missing checksum URL"
 echo "$out" | grep -Eq 'target +: +(x86_64|aarch64)-(unknown-linux-gnu|apple-darwin)' \
   || fail "install.sh dry-run missing platform target"
 [[ -d "$install_dir" ]] || fail "install.sh dry-run did not create install dir"
@@ -59,6 +60,20 @@ mkdir -p "$www/beta/${asset}"
 printf '#!/bin/sh\necho summa 0.0.0-ci\n' > "$www/beta/${asset}/summa"
 chmod +x "$www/beta/${asset}/summa"
 tar -C "$www/beta" -czf "$www/beta/${asset}.tar.gz" "$asset"
+# CI writes GNU `shasum -a 256` sidecars next to the archive.
+(
+  cd "$www/beta"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
+  else
+    sha256sum "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
+  fi
+)
+mkdir -p "$www/mismatch/beta" "$www/nochecksum/beta"
+cp "$www/beta/${asset}.tar.gz" "$www/mismatch/beta/"
+cp "$www/beta/${asset}.tar.gz" "$www/nochecksum/beta/"
+printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "${asset}.tar.gz" \
+  > "$www/mismatch/beta/${asset}.tar.gz.sha256"
 cp install.sh "$www/install.sh"
 portfile="$tmp/http.port"
 python3 - "$www" "$portfile" <<'PY' &
@@ -90,12 +105,54 @@ info_curl="$(
 )"
 printf '%s\n' "$info_curl"
 grep -q 'channel beta written' <<<"$info_curl" || fail "install.sh did not record update channel"
-kill "$http_pid" >/dev/null 2>&1 || true
-wait "$http_pid" >/dev/null 2>&1 || true
+grep -q 'checksum ok' <<<"$info_curl" || fail "install.sh did not verify sha256"
 [[ -x "$curl_bin/summa" ]] || fail "curl | bash did not install an executable"
 got="$("$curl_bin/summa")"
 [[ "$got" == "summa 0.0.0-ci" ]] || fail "installed stub printed: $got"
 ok "curl | bash install.sh"
+
+run_install() {
+  local prefix="$1" dest="$2"
+  env \
+    HOME="$tmp/home-${prefix}" \
+    SUMMA_DOWNLOAD_BASE="http://127.0.0.1:${port}/${prefix}" \
+    SUMMA_VERSION=beta \
+    SUMMA_INSTALL_DIR="$dest" \
+    bash install.sh
+}
+
+mismatch_bin="$tmp/mismatch-bin"
+mkdir -p "$mismatch_bin" "$tmp/home-mismatch"
+mismatch_out=""
+mismatch_rc=0
+if mismatch_out="$(run_install mismatch "$mismatch_bin" 2>&1)"; then
+  mismatch_rc=0
+else
+  mismatch_rc=$?
+fi
+printf '%s\n' "$mismatch_out"
+[ "$mismatch_rc" -ne 0 ] || fail "install.sh accepted a mismatched checksum"
+grep -q 'checksum mismatch' <<<"$mismatch_out" || fail "mismatch error missing 'checksum mismatch'"
+[[ ! -x "$mismatch_bin/summa" ]] || fail "mismatch install left a binary"
+ok "install.sh checksum mismatch is fatal"
+
+nochecksum_bin="$tmp/nochecksum-bin"
+mkdir -p "$nochecksum_bin" "$tmp/home-nochecksum"
+nocheck_out=""
+nocheck_rc=0
+if nocheck_out="$(run_install nochecksum "$nochecksum_bin" 2>&1)"; then
+  nocheck_rc=0
+else
+  nocheck_rc=$?
+fi
+printf '%s\n' "$nocheck_out"
+[ "$nocheck_rc" -ne 0 ] || fail "install.sh accepted an archive with no checksum"
+grep -q 'checksum not found' <<<"$nocheck_out" || fail "missing-sidecar error missing 'checksum not found'"
+[[ ! -x "$nochecksum_bin/summa" ]] || fail "missing-checksum install left a binary"
+ok "install.sh missing checksum is fatal"
+
+kill "$http_pid" >/dev/null 2>&1 || true
+wait "$http_pid" >/dev/null 2>&1 || true
 
 python3 - <<'PY'
 from pathlib import Path
@@ -180,6 +237,7 @@ echo "$rel" | grep -qE 'package .* -p summa-import|-p summa-import' \
   || fail "release.yml cargo package must use -p summa-import"
 echo "$rel" | grep -q -- '--bin summa' || fail "release.yml must build --bin summa"
 echo "$rel" | grep -q 'tag_name: beta' || fail "release.yml must publish rolling beta channel binaries"
+echo "$rel" | grep -q '.tar.gz.sha256' || fail "release.yml must publish .sha256 sidecars"
 
 ci="$(cat .github/workflows/ci.yml)"
 echo "$ci" | grep -qE 'cargo test .* -p summa-import' || fail "ci.yml cargo test must use -p summa-import"
