@@ -198,6 +198,60 @@ impl ClickHouseSink {
         }
     }
 
+    /// Distinct `(date, record_type, source, machine_name)` scopes present in `rows`.
+    fn scopes_of(rows: &[EventRow]) -> Vec<(String, String, String, String)> {
+        let mut scopes = Vec::new();
+        let mut seen: HashMap<(String, String, String, String), ()> = HashMap::new();
+        for row in rows {
+            let key = (
+                row.date.clone(),
+                row.record_type.clone(),
+                row.source.clone(),
+                row.machine_name.clone(),
+            );
+            if seen.insert(key, ()).is_none() {
+                scopes.push(key);
+            }
+        }
+        scopes
+    }
+
+    /// Build the retire-previous-scope mutation: delete rows in the given scopes
+    /// that were written by a *different* import run. Keeping every row whose
+    /// `import_id` is in `keep_import_ids` (the ids present in this write batch)
+    /// is what makes the insert-then-retire order crash-safe (issue #101). Using
+    /// the whole batch's id set — not a single id — guarantees the retire never
+    /// deletes a row this write just inserted, even when a batch mixes ids (e.g.
+    /// `publish` forwarding rows from many historical runs in one call).
+    fn retire_scopes_sql(
+        scopes: &[(String, String, String, String)],
+        keep_import_ids: &[String],
+    ) -> Option<String> {
+        if scopes.is_empty() || keep_import_ids.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::with_capacity(scopes.len());
+        for (date, record_type, source, machine_name) in scopes {
+            parts.push(format!(
+                "(date = '{}' AND record_type = '{}' AND source = '{}' AND machine_name = '{}')",
+                escape_sql_literal(date),
+                escape_sql_literal(record_type),
+                escape_sql_literal(source),
+                escape_sql_literal(machine_name),
+            ));
+        }
+        let keep_list = keep_import_ids
+            .iter()
+            .map(|id| format!("'{}'", escape_sql_literal(id)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "ALTER TABLE ccusage_events DELETE WHERE ({}) AND import_id NOT IN ({})",
+            parts.join(" OR "),
+            keep_list,
+        ))
+    }
+
     pub async fn delete_by_dedup_keys(&self, keys: &[String]) -> anyhow::Result<()> {
         if keys.is_empty() {
             return Ok(());
@@ -302,49 +356,40 @@ impl DataSink for ClickHouseSink {
             return Ok(result);
         }
 
-        // Group events by (date, record_type, source, machine_name) for scoped deletes.
-        let mut scopes: Vec<(String, String, String, String)> = Vec::new();
-        let mut seen: HashMap<(String, String, String, String), usize> = HashMap::new();
-        for row in &rows {
-            let key = (
-                row.date.clone(),
-                row.record_type.clone(),
-                row.source.clone(),
-                row.machine_name.clone(),
-            );
-            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(key.clone()) {
-                e.insert(scopes.len());
-                scopes.push(key);
+        // Stamp any rows that arrived without an import_id (older sources / manual
+        // callers) with a fresh run id so the retire step keeps them, then collect
+        // the full set of ids present in this batch. The retire excludes every one
+        // of them, so it can never delete a row this write just inserted — even
+        // when a batch mixes ids (publish forwards rows from many runs at once).
+        let mut rows = rows;
+        let mut keep_import_ids: Vec<String> = Vec::new();
+        for r in &mut rows {
+            if r.import_id.is_empty() {
+                r.import_id = uuid::Uuid::new_v4().to_string();
+            }
+            if !keep_import_ids.contains(&r.import_id) {
+                keep_import_ids.push(r.import_id.clone());
             }
         }
 
-        // Batch DELETE scoped to (date, record_type, source, machine_name).
-        for chunk in scopes.chunks(CH_DELETE_BATCH) {
-            let conditions: Vec<String> = chunk
-                .iter()
-                .map(|(date, record_type, source, machine_name)| {
-                    format!(
-                        "(date = '{}' AND record_type = '{}' AND source = '{}' AND machine_name = '{}')",
-                        escape_sql_literal(date),
-                        escape_sql_literal(record_type),
-                        escape_sql_literal(source),
-                        escape_sql_literal(machine_name),
-                    )
-                })
-                .collect();
-            let query = format!(
-                "ALTER TABLE ccusage_events DELETE WHERE {}",
-                conditions.join(" OR ")
-            );
-            self.run_query(&query).await?;
-        }
-
-        // Insert rows in batches.
+        // Insert first, then retire rows from prior runs in the touched scopes.
+        // Crash after the insert (before or during the retire) leaves duplicates,
+        // not holes — ReplacingMergeTree collapses them by (ORDER BY, updated_at)
+        // and the next successful run's retire re-removes the stale set. The
+        // retire always excludes this batch's import_ids, so it never deletes the
+        // rows this write just inserted. (Issue #101.)
         const CHUNK_SIZE: usize = 1000;
         let mut inserted = 0;
         for chunk in rows.chunks(CHUNK_SIZE) {
             self.insert_rows(chunk).await?;
             inserted += chunk.len();
+        }
+
+        let scopes = Self::scopes_of(&rows);
+        for chunk in scopes.chunks(CH_DELETE_BATCH) {
+            if let Some(query) = Self::retire_scopes_sql(chunk, &keep_import_ids) {
+                self.run_query(&query).await?;
+            }
         }
 
         result.tables_written.push("ccusage_events".to_string());
@@ -363,5 +408,84 @@ impl DataSink for ClickHouseSink {
 impl Default for ClickHouseSink {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(date: &str, rt: &str, src: &str, machine: &str, import_id: &str) -> EventRow {
+        EventRow {
+            date: date.into(),
+            record_type: rt.into(),
+            source: src.into(),
+            machine_name: machine.into(),
+            import_id: import_id.into(),
+            ..EventRow::default()
+        }
+    }
+
+    #[test]
+    fn scopes_of_dedups_scope_tuples() {
+        let rows = vec![
+            row("2026-08-20", "daily", "ccusage", "box", "run-1"),
+            row("2026-08-20", "daily", "ccusage", "box", "run-1"),
+            row("2026-08-21", "daily", "ccusage", "box", "run-1"),
+            row("2026-08-20", "daily", "cursor", "account", "run-1"),
+        ];
+        let scopes = ClickHouseSink::scopes_of(&rows);
+        assert_eq!(scopes.len(), 3);
+    }
+
+    #[test]
+    fn retire_sql_excludes_current_run() {
+        let scopes = vec![
+            ("2026-08-20".into(), "daily".into(), "ccusage".into(), "box".into()),
+        ];
+        let sql = ClickHouseSink::retire_scopes_sql(&scopes, &["run-9".into()]).unwrap();
+        assert!(
+            sql.contains("import_id NOT IN ('run-9')"),
+            "retire must keep the current run's rows: {sql}"
+        );
+        assert!(
+            sql.contains("machine_name = 'box'") && sql.contains("source = 'ccusage'"),
+            "retire must scope to the touched scope: {sql}"
+        );
+    }
+
+    #[test]
+    fn retire_sql_keeps_every_batch_id() {
+        // publish() forwards rows from many historical runs in one batch; the
+        // retire must keep all of them, not just the first.
+        let scopes = vec![
+            ("2026-08-20".into(), "daily".into(), "ccusage".into(), "box".into()),
+        ];
+        let sql =
+            ClickHouseSink::retire_scopes_sql(&scopes, &["run-1".into(), "run-2".into()]).unwrap();
+        assert!(
+            sql.contains("import_id NOT IN ('run-1', 'run-2')"),
+            "retire must keep every batch import_id: {sql}"
+        );
+    }
+
+    #[test]
+    fn retire_sql_escaped_quote_cannot_inject() {
+        let scopes = vec![
+            ("2026-08-20".into(), "daily".into(), "ccusage".into(), "a'b".into()),
+        ];
+        let sql = ClickHouseSink::retire_scopes_sql(&scopes, &["x'y".into()]).unwrap();
+        assert!(sql.contains("machine_name = 'a''b'"));
+        assert!(sql.contains("import_id NOT IN ('x''y')"));
+    }
+
+    #[test]
+    fn retire_sql_none_for_empty_scopes_or_ids() {
+        assert!(ClickHouseSink::retire_scopes_sql(&[], &["run-1".into()]).is_none());
+        assert!(ClickHouseSink::retire_scopes_sql(
+            &[("2026-08-20".into(), "daily".into(), "ccusage".into(), "box".into())],
+            &[]
+        )
+        .is_none());
     }
 }
