@@ -1,13 +1,10 @@
 use crate::config::ClickHouseConfig;
 use crate::model::{DataSink, EventRow, EventsSnapshotData, SinkResult};
-use crate::util::escape_sql_literal;
 use async_trait::async_trait;
 use reqwest::Client;
 use std::collections::HashMap;
 
-const LIVE_TABLE: &str = "ccusage_events";
-const SWAP_TABLE: &str = "ccusage_events__swap";
-const INSERT_CHUNK: usize = 1000;
+const CH_DELETE_BATCH: usize = 50;
 
 fn percent_encode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 3);
@@ -19,6 +16,11 @@ fn percent_encode(input: &str) -> String {
         }
     }
     out
+}
+
+/// Escape a single-quoted SQL string literal by doubling embedded quotes.
+fn escape_sql_literal(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 /// Build the base CREATE TABLE statement (without deferred columns).
@@ -69,97 +71,6 @@ fn click_house_alter_statements() -> Vec<&'static str> {
     ]
 }
 
-type ScopeKey = (String, String, String, String);
-
-fn collect_scopes(rows: &[EventRow]) -> Vec<ScopeKey> {
-    let mut scopes: Vec<ScopeKey> = Vec::new();
-    let mut seen: HashMap<ScopeKey, ()> = HashMap::new();
-    for row in rows {
-        let key = (
-            row.date.clone(),
-            row.record_type.clone(),
-            row.source.clone(),
-            row.machine_name.clone(),
-        );
-        if seen.insert(key.clone(), ()).is_none() {
-            scopes.push(key);
-        }
-    }
-    scopes
-}
-
-fn collect_antigravity_machines(rows: &[EventRow]) -> Vec<String> {
-    let mut machines = Vec::new();
-    for row in rows {
-        if row.source == "antigravity" && !machines.iter().any(|m| m == &row.machine_name) {
-            machines.push(row.machine_name.clone());
-        }
-    }
-    machines
-}
-
-fn sql_string(value: &str) -> String {
-    format!("'{}'", escape_sql_literal(value))
-}
-
-/// Rows kept from the live table: everything outside this snapshot's replace scopes.
-/// Antigravity is a full machine snapshot (same as DuckDB).
-fn keep_predicate(scopes: &[ScopeKey], antigravity_machines: &[String]) -> String {
-    let mut parts = Vec::new();
-    if !scopes.is_empty() {
-        let tuples = scopes
-            .iter()
-            .map(|(date, record_type, source, machine_name)| {
-                format!(
-                    "({},{},{},{})",
-                    sql_string(date),
-                    sql_string(record_type),
-                    sql_string(source),
-                    sql_string(machine_name),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        parts.push(format!(
-            "(date, record_type, source, machine_name) NOT IN ({tuples})"
-        ));
-    }
-    if !antigravity_machines.is_empty() {
-        let list = antigravity_machines
-            .iter()
-            .map(|m| sql_string(m))
-            .collect::<Vec<_>>()
-            .join(",");
-        parts.push(format!(
-            "NOT (source = 'antigravity' AND machine_name IN ({list}))"
-        ));
-    }
-    if parts.is_empty() {
-        "1".to_string()
-    } else {
-        parts.join(" AND ")
-    }
-}
-
-fn drop_swap_sql() -> String {
-    format!("DROP TABLE IF EXISTS {SWAP_TABLE}")
-}
-
-fn create_swap_sql() -> String {
-    format!("CREATE TABLE {SWAP_TABLE} AS {LIVE_TABLE}")
-}
-
-fn copy_kept_sql(scopes: &[ScopeKey], antigravity_machines: &[String]) -> String {
-    format!(
-        "INSERT INTO {SWAP_TABLE} SELECT * FROM {LIVE_TABLE} FINAL WHERE {}",
-        keep_predicate(scopes, antigravity_machines)
-    )
-}
-
-fn exchange_sql() -> String {
-    format!("EXCHANGE TABLES {LIVE_TABLE} AND {SWAP_TABLE}")
-}
-
 /// ClickHouse sink: writes flat event rows to `ccusage_events` via HTTP.
 pub struct ClickHouseSink {
     config: Option<ClickHouseConfig>,
@@ -208,7 +119,6 @@ impl ClickHouseSink {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn run_command(&self, query: &str) -> anyhow::Result<()> {
         let client = self
             .client
@@ -288,6 +198,60 @@ impl ClickHouseSink {
         }
     }
 
+    /// Distinct `(date, record_type, source, machine_name)` scopes present in `rows`.
+    fn scopes_of(rows: &[EventRow]) -> Vec<(String, String, String, String)> {
+        let mut scopes = Vec::new();
+        let mut seen: HashMap<(String, String, String, String), ()> = HashMap::new();
+        for row in rows {
+            let key = (
+                row.date.clone(),
+                row.record_type.clone(),
+                row.source.clone(),
+                row.machine_name.clone(),
+            );
+            if seen.insert(key, ()).is_none() {
+                scopes.push(key);
+            }
+        }
+        scopes
+    }
+
+    /// Build the retire-previous-scope mutation: delete rows in the given scopes
+    /// that were written by a *different* import run. Keeping every row whose
+    /// `import_id` is in `keep_import_ids` (the ids present in this write batch)
+    /// is what makes the insert-then-retire order crash-safe (issue #101). Using
+    /// the whole batch's id set — not a single id — guarantees the retire never
+    /// deletes a row this write just inserted, even when a batch mixes ids (e.g.
+    /// `publish` forwarding rows from many historical runs in one call).
+    fn retire_scopes_sql(
+        scopes: &[(String, String, String, String)],
+        keep_import_ids: &[String],
+    ) -> Option<String> {
+        if scopes.is_empty() || keep_import_ids.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::with_capacity(scopes.len());
+        for (date, record_type, source, machine_name) in scopes {
+            parts.push(format!(
+                "(date = '{}' AND record_type = '{}' AND source = '{}' AND machine_name = '{}')",
+                escape_sql_literal(date),
+                escape_sql_literal(record_type),
+                escape_sql_literal(source),
+                escape_sql_literal(machine_name),
+            ));
+        }
+        let keep_list = keep_import_ids
+            .iter()
+            .map(|id| format!("'{}'", escape_sql_literal(id)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "ALTER TABLE ccusage_events DELETE WHERE ({}) AND import_id NOT IN ({})",
+            parts.join(" OR "),
+            keep_list,
+        ))
+    }
+
     pub async fn delete_by_dedup_keys(&self, keys: &[String]) -> anyhow::Result<()> {
         if keys.is_empty() {
             return Ok(());
@@ -297,13 +261,13 @@ impl ClickHouseSink {
             let list = chunk
                 .iter()
                 .filter(|k| !k.is_empty())
-                .map(|k| sql_string(k))
+                .map(|k| format!("'{}'", escape_sql_literal(k)))
                 .collect::<Vec<_>>();
             if list.is_empty() {
                 continue;
             }
             let query = format!(
-                "ALTER TABLE {LIVE_TABLE} DELETE WHERE dedup_key IN ({})",
+                "ALTER TABLE ccusage_events DELETE WHERE dedup_key IN ({})",
                 list.join(",")
             );
             self.run_query(&query).await?;
@@ -312,22 +276,24 @@ impl ClickHouseSink {
     }
 
     pub async fn insert_events(&self, rows: &[EventRow]) -> anyhow::Result<()> {
-        for chunk in rows.chunks(INSERT_CHUNK) {
-            self.insert_rows(LIVE_TABLE, chunk).await?;
+        const CHUNK_SIZE: usize = 1000;
+        for chunk in rows.chunks(CHUNK_SIZE) {
+            self.insert_rows(chunk).await?;
         }
         Ok(())
     }
 
-    async fn insert_rows(&self, table: &str, rows: &[EventRow]) -> anyhow::Result<()> {
+    async fn insert_rows(&self, rows: &[EventRow]) -> anyhow::Result<()> {
         let client = self
             .client
             .as_ref()
             .expect("ClickHouseSink not connected");
         let url = format!(
-            "{}/?query=INSERT+INTO+{table}+FORMAT+JSONEachRow",
+            "{}/?query=INSERT+INTO+ccusage_events+FORMAT+JSONEachRow",
             self.base_url()
         );
 
+        // Serialize each row as a JSON object on its own line.
         let mut body = String::with_capacity(rows.len() * 512);
         for row in rows {
             body.push_str(&serde_json::to_string(row)?);
@@ -352,37 +318,6 @@ impl ClickHouseSink {
             .error_for_status()?;
         Ok(())
     }
-
-    pub async fn connect_with(&mut self, cfg: ClickHouseConfig) -> anyhow::Result<()> { // pragma: allowlist secret
-        self.config = Some(cfg);
-        self.client = Some(Client::new());
-        self.run_query(click_house_create_sql()).await?;
-        for stmt in click_house_alter_statements() {
-            let _ = self.run_query(stmt).await;
-        }
-        Ok(())
-    }
-
-    /// Build replacement in `ccusage_events__swap`, then atomically swap.
-    /// Live `ccusage_events` is unchanged until EXCHANGE TABLES succeeds.
-    async fn write_via_swap(&self, rows: &[EventRow]) -> anyhow::Result<usize> {
-        let scopes = collect_scopes(rows);
-        let antigravity_machines = collect_antigravity_machines(rows);
-
-        self.run_query(&drop_swap_sql()).await?;
-        self.run_query(&create_swap_sql()).await?;
-        self.run_query(&copy_kept_sql(&scopes, &antigravity_machines))
-            .await?;
-
-        let mut inserted = 0;
-        for chunk in rows.chunks(INSERT_CHUNK) {
-            self.insert_rows(SWAP_TABLE, chunk).await?;
-            inserted += chunk.len();
-        }
-
-        self.run_query(&exchange_sql()).await?;
-        Ok(inserted)
-    }
 }
 
 #[async_trait]
@@ -392,7 +327,17 @@ impl DataSink for ClickHouseSink {
     }
 
     async fn connect(&mut self) -> anyhow::Result<()> {
-        self.connect_with(ClickHouseConfig::from_env()).await // pragma: allowlist secret
+        let cfg = ClickHouseConfig::from_env();
+        self.config = Some(cfg);
+        self.client = Some(Client::new());
+
+        // Ensure table exists.
+        self.run_query(click_house_create_sql()).await?;
+        for stmt in click_house_alter_statements() {
+            // Idempotent: ignore "column already exists" errors.
+            let _ = self.run_query(stmt).await;
+        }
+        Ok(())
     }
 
     async fn write(&mut self, data: EventsSnapshotData) -> anyhow::Result<SinkResult> {
@@ -411,12 +356,44 @@ impl DataSink for ClickHouseSink {
             return Ok(result);
         }
 
-        let inserted = self.write_via_swap(&rows).await?;
+        // Stamp any rows that arrived without an import_id (older sources / manual
+        // callers) with a fresh run id so the retire step keeps them, then collect
+        // the full set of ids present in this batch. The retire excludes every one
+        // of them, so it can never delete a row this write just inserted — even
+        // when a batch mixes ids (publish forwards rows from many runs at once).
+        let mut rows = rows;
+        let mut keep_import_ids: Vec<String> = Vec::new();
+        for r in &mut rows {
+            if r.import_id.is_empty() {
+                r.import_id = uuid::Uuid::new_v4().to_string();
+            }
+            if !keep_import_ids.contains(&r.import_id) {
+                keep_import_ids.push(r.import_id.clone());
+            }
+        }
 
-        result.tables_written.push(LIVE_TABLE.to_string());
-        result
-            .rows_written
-            .insert(LIVE_TABLE.to_string(), inserted as u64);
+        // Insert first, then retire rows from prior runs in the touched scopes.
+        // Crash after the insert (before or during the retire) leaves duplicates,
+        // not holes — ReplacingMergeTree collapses them by (ORDER BY, updated_at)
+        // and the next successful run's retire re-removes the stale set. The
+        // retire always excludes this batch's import_ids, so it never deletes the
+        // rows this write just inserted. (Issue #101.)
+        const CHUNK_SIZE: usize = 1000;
+        let mut inserted = 0;
+        for chunk in rows.chunks(CHUNK_SIZE) {
+            self.insert_rows(chunk).await?;
+            inserted += chunk.len();
+        }
+
+        let scopes = Self::scopes_of(&rows);
+        for chunk in scopes.chunks(CH_DELETE_BATCH) {
+            if let Some(query) = Self::retire_scopes_sql(chunk, &keep_import_ids) {
+                self.run_query(&query).await?;
+            }
+        }
+
+        result.tables_written.push("ccusage_events".to_string());
+        result.rows_written.insert("ccusage_events".to_string(), inserted as u64);
         result.duration_ms = start.elapsed().as_millis() as u64;
         Ok(result)
     }
@@ -437,466 +414,78 @@ impl Default for ClickHouseSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::EventsSnapshotData;
-    use axum::body::Bytes;
-    use axum::extract::{Query, RawQuery, State};
-    use axum::http::StatusCode;
-    use axum::routing::post;
-    use axum::Router;
-    use std::collections::HashMap as StdHashMap;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
 
-    fn sample_row(date: &str, source: &str, machine: &str, model: &str, cost: f64) -> EventRow {
+    fn row(date: &str, rt: &str, src: &str, machine: &str, import_id: &str) -> EventRow {
         EventRow {
             date: date.into(),
-            record_type: "daily".into(),
-            record_key: date.into(),
-            source: source.into(),
+            record_type: rt.into(),
+            source: src.into(),
             machine_name: machine.into(),
-            model_name: model.into(),
-            cost,
-            total_tokens: (cost * 1000.0) as u64,
-            dedup_key: format!("{date}-{source}-{machine}-{model}"),
+            import_id: import_id.into(),
             ..EventRow::default()
         }
     }
 
     #[test]
-    fn write_plan_never_deletes_live_rows() {
-        let rows = vec![sample_row("2026-09-01", "ccusage", "host", "sonnet", 1.0)];
-        let scopes = collect_scopes(&rows);
-        let ag = collect_antigravity_machines(&rows);
-        let stmts = [
-            drop_swap_sql(),
-            create_swap_sql(),
-            copy_kept_sql(&scopes, &ag),
-            exchange_sql(),
+    fn scopes_of_dedups_scope_tuples() {
+        let rows = vec![
+            row("2026-08-20", "daily", "ccusage", "box", "run-1"),
+            row("2026-08-20", "daily", "ccusage", "box", "run-1"),
+            row("2026-08-21", "daily", "ccusage", "box", "run-1"),
+            row("2026-08-20", "daily", "cursor", "account", "run-1"),
         ];
-        for sql in &stmts {
-            let lower = sql.to_ascii_lowercase();
-            assert!(
-                !lower.contains("alter table ccusage_events delete"),
-                "live delete leaked into plan: {sql}"
-            );
-            assert!(
-                !lower.contains(&format!("delete from {LIVE_TABLE}")),
-                "live delete leaked into plan: {sql}"
-            );
-        }
-        assert_eq!(stmts[3], "EXCHANGE TABLES ccusage_events AND ccusage_events__swap");
-        assert!(copy_kept_sql(&scopes, &ag).contains("INSERT INTO ccusage_events__swap"));
-        assert!(copy_kept_sql(&scopes, &ag).contains("FROM ccusage_events FINAL"));
+        let scopes = ClickHouseSink::scopes_of(&rows);
+        assert_eq!(scopes.len(), 3);
     }
 
     #[test]
-    fn keep_predicate_excludes_scopes_and_escapes_quotes() {
-        let rows = vec![sample_row(
-            "2026-09-01",
-            "ccusage",
-            "host'1",
-            "sonnet",
-            1.0,
-        )];
-        let pred = keep_predicate(&collect_scopes(&rows), &[]);
-        assert!(pred.contains("NOT IN"));
-        assert!(pred.contains("'host''1'"));
-        assert!(!pred.contains("antigravity"));
-    }
-
-    #[test]
-    fn keep_predicate_drops_all_antigravity_for_machine() {
-        let rows = vec![sample_row(
-            "2026-09-01",
-            "antigravity",
-            "laptop",
-            "gemini",
-            0.5,
-        )];
-        let pred = keep_predicate(
-            &collect_scopes(&rows),
-            &collect_antigravity_machines(&rows),
+    fn retire_sql_excludes_current_run() {
+        let scopes = vec![
+            ("2026-08-20".into(), "daily".into(), "ccusage".into(), "box".into()),
+        ];
+        let sql = ClickHouseSink::retire_scopes_sql(&scopes, &["run-9".into()]).unwrap();
+        assert!(
+            sql.contains("import_id NOT IN ('run-9')"),
+            "retire must keep the current run's rows: {sql}"
         );
-        assert!(pred.contains("NOT (source = 'antigravity' AND machine_name IN ('laptop'))"));
-    }
-
-    fn apply_snapshot(live: &[EventRow], incoming: &[EventRow]) -> Vec<EventRow> {
-        let scopes = collect_scopes(incoming);
-        let ag = collect_antigravity_machines(incoming);
-        let mut out: Vec<EventRow> = live
-            .iter()
-            .filter(|row| !row_replaced_by_snapshot(row, &scopes, &ag))
-            .cloned()
-            .collect();
-        out.extend(incoming.iter().cloned());
-        out
-    }
-
-    fn row_replaced_by_snapshot(
-        row: &EventRow,
-        scopes: &[ScopeKey],
-        antigravity_machines: &[String],
-    ) -> bool {
-        if row.source == "antigravity"
-            && antigravity_machines.iter().any(|m| m == &row.machine_name)
-        {
-            return true;
-        }
-        scopes.iter().any(|(date, record_type, source, machine_name)| {
-            date == &row.date
-                && record_type == &row.record_type
-                && source == &row.source
-                && machine_name == &row.machine_name
-        })
-    }
-
-    fn cost_of(rows: &[EventRow], date: &str, model: &str) -> f64 {
-        rows.iter()
-            .filter(|r| r.date == date && r.model_name == model)
-            .map(|r| r.cost)
-            .sum()
+        assert!(
+            sql.contains("machine_name = 'box'") && sql.contains("source = 'ccusage'"),
+            "retire must scope to the touched scope: {sql}"
+        );
     }
 
     #[test]
-    fn swap_commit_replaces_scope_and_keeps_other_days() {
-        let prior = vec![
-            sample_row("2026-09-01", "ccusage", "host", "sonnet", 1.25),
-            sample_row("2026-09-02", "ccusage", "host", "opus", 2.50),
+    fn retire_sql_keeps_every_batch_id() {
+        // publish() forwards rows from many historical runs in one batch; the
+        // retire must keep all of them, not just the first.
+        let scopes = vec![
+            ("2026-08-20".into(), "daily".into(), "ccusage".into(), "box".into()),
         ];
-        let incoming = vec![sample_row(
-            "2026-09-01",
-            "ccusage",
-            "host",
-            "sonnet",
-            9.00,
-        )];
-        let committed = apply_snapshot(&prior, &incoming);
-        assert!((cost_of(&committed, "2026-09-01", "sonnet") - 9.00).abs() < 1e-9);
-        assert!((cost_of(&committed, "2026-09-02", "opus") - 2.50).abs() < 1e-9);
-        assert_eq!(committed.len(), 2);
+        let sql =
+            ClickHouseSink::retire_scopes_sql(&scopes, &["run-1".into(), "run-2".into()]).unwrap();
+        assert!(
+            sql.contains("import_id NOT IN ('run-1', 'run-2')"),
+            "retire must keep every batch import_id: {sql}"
+        );
     }
 
     #[test]
-    fn swap_commit_drops_stale_model_in_replaced_scope() {
-        let prior = vec![sample_row(
-            "2026-09-01",
-            "ccusage",
-            "host",
-            "sonnet",
-            1.25,
-        )];
-        let incoming = vec![sample_row("2026-09-01", "ccusage", "host", "opus", 3.00)];
-        let committed = apply_snapshot(&prior, &incoming);
-        assert_eq!(cost_of(&committed, "2026-09-01", "sonnet"), 0.0);
-        assert!((cost_of(&committed, "2026-09-01", "opus") - 3.00).abs() < 1e-9);
-        assert_eq!(committed.len(), 1);
-    }
-
-    /// Live table is only replaced at EXCHANGE. Any earlier failure keeps prior rows.
-    fn simulate_write(
-        live: Vec<EventRow>,
-        incoming: &[EventRow],
-        fail_before_exchange: bool,
-        fail_after_inserts: usize,
-    ) -> (Vec<EventRow>, bool) {
-        let scopes = collect_scopes(incoming);
-        let ag = collect_antigravity_machines(incoming);
-        let mut swap: Vec<EventRow> = live
-            .iter()
-            .filter(|row| !row_replaced_by_snapshot(row, &scopes, &ag))
-            .cloned()
-            .collect();
-        for (i, row) in incoming.iter().enumerate() {
-            if i >= fail_after_inserts {
-                return (live, false);
-            }
-            swap.push(row.clone());
-        }
-        if fail_before_exchange {
-            return (live, false);
-        }
-        (swap, true)
-    }
-
-    #[test]
-    fn crash_before_exchange_keeps_prior_live_rows() {
-        let prior = vec![
-            sample_row("2026-09-01", "ccusage", "host", "sonnet", 1.25),
-            sample_row("2026-09-02", "cursor", "account", "grok", 4.00),
+    fn retire_sql_escaped_quote_cannot_inject() {
+        let scopes = vec![
+            ("2026-08-20".into(), "daily".into(), "ccusage".into(), "a'b".into()),
         ];
-        let incoming = vec![sample_row(
-            "2026-09-01",
-            "ccusage",
-            "host",
-            "sonnet",
-            99.00,
-        )];
-        let (live, ok) = simulate_write(prior.clone(), &incoming, true, usize::MAX);
-        assert!(!ok);
-        assert_eq!(live, prior);
-        assert!((cost_of(&live, "2026-09-01", "sonnet") - 1.25).abs() < 1e-9);
-        assert!((cost_of(&live, "2026-09-02", "grok") - 4.00).abs() < 1e-9);
+        let sql = ClickHouseSink::retire_scopes_sql(&scopes, &["x'y".into()]).unwrap();
+        assert!(sql.contains("machine_name = 'a''b'"));
+        assert!(sql.contains("import_id NOT IN ('x''y')"));
     }
 
     #[test]
-    fn crash_mid_insert_into_swap_keeps_prior_live_rows() {
-        let prior = vec![sample_row(
-            "2026-09-01",
-            "ccusage",
-            "host",
-            "sonnet",
-            1.25,
-        )];
-        let incoming = vec![
-            sample_row("2026-09-01", "ccusage", "host", "sonnet", 2.00),
-            sample_row("2026-09-01", "ccusage", "host", "opus", 3.00),
-        ];
-        let (live, ok) = simulate_write(prior.clone(), &incoming, false, 1);
-        assert!(!ok);
-        assert_eq!(live, prior);
-        assert!((cost_of(&live, "2026-09-01", "sonnet") - 1.25).abs() < 1e-9);
-        assert_eq!(cost_of(&live, "2026-09-01", "opus"), 0.0);
-    }
-
-    #[derive(Clone)]
-    struct FakeCh {
-        tables: Arc<Mutex<StdHashMap<String, Vec<EventRow>>>>,
-        queries: Arc<Mutex<Vec<String>>>,
-        /// Fail the Nth JSONEachRow insert (1-based). 0 = never fail.
-        fail_on_insert: Arc<AtomicUsize>,
-        insert_count: Arc<AtomicUsize>,
-    }
-
-    impl FakeCh {
-        fn new() -> Self {
-            Self {
-                tables: Arc::new(Mutex::new(StdHashMap::new())),
-                queries: Arc::new(Mutex::new(Vec::new())),
-                fail_on_insert: Arc::new(AtomicUsize::new(0)),
-                insert_count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-
-        fn live_rows(&self) -> Vec<EventRow> {
-            self.tables
-                .lock()
-                .unwrap()
-                .get(LIVE_TABLE)
-                .cloned()
-                .unwrap_or_default()
-        }
-
-        fn recorded(&self) -> Vec<String> {
-            self.queries.lock().unwrap().clone()
-        }
-    }
-
-    fn table_token<'a>(sql: &'a str, after: &str) -> Option<&'a str> {
-        let idx = sql.find(after)?;
-        let rest = sql[idx + after.len()..].trim_start();
-        rest.split(|c: char| c.is_whitespace() || c == '(' || c == ';')
-            .next()
-            .filter(|s| !s.is_empty())
-    }
-
-    async fn fake_ch_handler(
-        State(state): State<FakeCh>,
-        RawQuery(raw): RawQuery,
-        Query(params): Query<StdHashMap<String, String>>,
-        body: Bytes,
-    ) -> StatusCode {
-        let body_s = String::from_utf8_lossy(&body).into_owned();
-        let sql = params
-            .get("query")
-            .cloned()
-            .or_else(|| {
-                raw.as_deref().and_then(|q| {
-                    q.strip_prefix("query=")
-                        .map(|v| v.replace('+', " "))
-                })
-            })
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| body_s.clone());
-        state.queries.lock().unwrap().push(sql.clone());
-
-        let trimmed = sql.trim();
-        let upper = trimmed.to_ascii_uppercase();
-
-        if upper.starts_with("SELECT 1") {
-            return StatusCode::OK;
-        }
-        if upper.starts_with("ALTER TABLE") {
-            return StatusCode::OK;
-        }
-        if upper.starts_with("DROP TABLE") {
-            if let Some(name) = table_token(trimmed, "EXISTS ").or_else(|| {
-                table_token(trimmed, "TABLE ")
-            }) {
-                state.tables.lock().unwrap().remove(name);
-            }
-            return StatusCode::OK;
-        }
-        if upper.contains("CREATE TABLE") && upper.contains(" AS ") {
-            if let Some(name) = table_token(trimmed, "TABLE ") {
-                state
-                    .tables
-                    .lock()
-                    .unwrap()
-                    .entry(name.to_string())
-                    .or_default();
-            }
-            return StatusCode::OK;
-        }
-        if upper.starts_with("CREATE TABLE") {
-            if let Some(name) = table_token(trimmed, "EXISTS ")
-                .or_else(|| table_token(trimmed, "TABLE "))
-            {
-                state
-                    .tables
-                    .lock()
-                    .unwrap()
-                    .entry(name.to_string())
-                    .or_default();
-            }
-            return StatusCode::OK;
-        }
-        if upper.starts_with("EXCHANGE TABLES") {
-            let mut tables = state.tables.lock().unwrap();
-            let a = tables.remove(LIVE_TABLE).unwrap_or_default();
-            let b = tables.remove(SWAP_TABLE).unwrap_or_default();
-            tables.insert(LIVE_TABLE.to_string(), b);
-            tables.insert(SWAP_TABLE.to_string(), a);
-            return StatusCode::OK;
-        }
-        if upper.contains("FORMAT JSONEACHROW") {
-            let n = state.insert_count.fetch_add(1, Ordering::SeqCst) + 1;
-            let fail = state.fail_on_insert.load(Ordering::SeqCst);
-            if fail > 0 && n == fail {
-                return StatusCode::INTERNAL_SERVER_ERROR;
-            }
-            let table = table_token(trimmed, "INTO ").unwrap_or(SWAP_TABLE);
-            let mut rows = Vec::new();
-            for line in body_s.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                if let Ok(row) = serde_json::from_str::<EventRow>(line) {
-                    rows.push(row);
-                }
-            }
-            state
-                .tables
-                .lock()
-                .unwrap()
-                .entry(table.to_string())
-                .or_default()
-                .extend(rows);
-            return StatusCode::OK;
-        }
-        if upper.starts_with("INSERT INTO") && upper.contains(" SELECT ") {
-            let dest = table_token(trimmed, "INTO ").unwrap_or(SWAP_TABLE);
-            let src = table_token(trimmed, "FROM ").unwrap_or(LIVE_TABLE);
-            let tables = state.tables.lock().unwrap();
-            let src_rows = tables.get(src).cloned().unwrap_or_default();
-            drop(tables);
-            // Fake CH does not parse WHERE; production still sends the keep predicate.
-            // Crash-safety tests only need live to stay put until EXCHANGE.
-            state
-                .tables
-                .lock()
-                .unwrap()
-                .entry(dest.to_string())
-                .or_default()
-                .extend(src_rows);
-            return StatusCode::OK;
-        }
-        StatusCode::OK
-    }
-
-    async fn spawn_fake_ch(state: FakeCh) -> (u16, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let app = Router::new()
-            .route("/", post(fake_ch_handler))
-            .with_state(state);
-        let handle = tokio::spawn(async move {
-            axum::serve(listener, app).await.ok();
-        });
-        (port, handle)
-    }
-
-    fn test_cfg(port: u16) -> ClickHouseConfig { // pragma: allowlist secret
-        ClickHouseConfig { // pragma: allowlist secret
-            host: "127.0.0.1".into(),
-            port,
-            user: "default".into(),
-            password: String::new(),
-            database: String::new(),
-            protocol: "http".into(),
-        }
-    }
-
-    #[tokio::test]
-    async fn http_write_exchanges_and_does_not_delete_live() {
-        let fake = FakeCh::new();
-        let (port, server) = spawn_fake_ch(fake.clone()).await;
-        let mut sink = ClickHouseSink::new(); // pragma: allowlist secret
-        sink.connect_with(test_cfg(port)).await.unwrap();
-        sink.connect_with(test_cfg(port)).await.unwrap();
-        let row = sample_row("2026-09-01", "ccusage", "host", "sonnet", 1.25);
-        sink.write(EventsSnapshotData {
-            events: vec![row.clone()],
-        })
-        .await
-        .unwrap();
-
-        let live = fake.live_rows();
-        assert_eq!(live.len(), 1);
-        assert!((live[0].cost - 1.25).abs() < 1e-9);
-        let log = fake.recorded().join("\n").to_ascii_lowercase();
-        assert!(log.contains("exchange tables ccusage_events and ccusage_events__swap"));
-        assert!(!log.contains("alter table ccusage_events delete"));
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn http_mid_write_insert_failure_preserves_prior_live_rows() {
-        let fake = FakeCh::new();
-        let (port, server) = spawn_fake_ch(fake.clone()).await;
-        let mut sink = ClickHouseSink::new(); // pragma: allowlist secret
-        sink.connect_with(test_cfg(port)).await.unwrap();
-
-        let prior = sample_row("2026-09-01", "ccusage", "host", "sonnet", 1.25);
-        sink.write(EventsSnapshotData {
-            events: vec![prior.clone()],
-        })
-        .await
-        .unwrap();
-        assert_eq!(fake.live_rows().len(), 1);
-        assert!((fake.live_rows()[0].cost - 1.25).abs() < 1e-9);
-
-        fake.fail_on_insert.store(1, Ordering::SeqCst);
-        fake.insert_count.store(0, Ordering::SeqCst);
-        let replacement = sample_row("2026-09-01", "ccusage", "host", "sonnet", 9.99);
-        let err = sink
-            .write(EventsSnapshotData {
-                events: vec![replacement],
-            })
-            .await;
-        assert!(err.is_err(), "second write should fail mid-insert");
-
-        let live = fake.live_rows();
-        assert_eq!(live.len(), 1, "live must still hold the first successful write");
-        assert!((live[0].cost - 1.25).abs() < 1e-9);
-        let exchanges = fake
-            .recorded()
-            .iter()
-            .filter(|q| q.to_ascii_uppercase().contains("EXCHANGE TABLES"))
-            .count();
-        assert_eq!(exchanges, 1, "failed rewrite must not EXCHANGE live");
-        server.abort();
+    fn retire_sql_none_for_empty_scopes_or_ids() {
+        assert!(ClickHouseSink::retire_scopes_sql(&[], &["run-1".into()]).is_none());
+        assert!(ClickHouseSink::retire_scopes_sql(
+            &[("2026-08-20".into(), "daily".into(), "ccusage".into(), "box".into())],
+            &[]
+        )
+        .is_none());
     }
 }
