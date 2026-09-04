@@ -467,12 +467,8 @@ async fn fanout_write(state: &AppState, events: Vec<EventRow>) -> Vec<SinkAck> {
 async fn write_clickhouse(rows: Vec<EventRow>) -> anyhow::Result<u64> {
     let mut sink = ClickHouseSink::new();
     sink.connect().await?;
-    let keys: Vec<String> = rows
-        .iter()
-        .map(|r| r.dedup_key.clone())
-        .filter(|k| !k.is_empty())
-        .collect();
-    sink.delete_by_dedup_keys(&keys).await?;
+    // Insert-only: ReplacingMergeTree(updated_at) collapses the same ORDER BY
+    // key. Deleting first would open a crash window where rows are gone.
     sink.insert_events(&rows).await?;
     Ok(rows.len() as u64)
 }

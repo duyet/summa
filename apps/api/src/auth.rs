@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use worker::{Env, Error, Request, Response, Result};
+use worker::{Env, Request, Response, Result};
 
 use crate::types::{new_id, sha256_hex, timing_safe_eq, TOKEN_PREFIX};
 
@@ -12,6 +12,12 @@ pub struct ApiKeyAuth {
 #[derive(Clone)]
 pub struct SessionAuth {
     pub account_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthError {
+    Unauthorized,
+    Unavailable,
 }
 
 #[derive(Deserialize)]
@@ -33,16 +39,15 @@ struct ApiKeyRow {
     revoked_at: Option<String>,
 }
 
-pub fn extract_bearer(req: &Request) -> String {
-    if let Ok(Some(alt)) = req.headers().get("X-Summa-Token") {
-        let t = alt.trim();
-        if !t.is_empty() {
-            return t.to_string();
-        }
+pub fn token_from_headers(x_summa: Option<&str>, authorization: Option<&str>) -> String {
+    if let Some(t) = x_summa.map(str::trim).filter(|s| !s.is_empty()) {
+        return t.to_string();
     }
-    if let Ok(Some(h)) = req.headers().get("Authorization") {
-        let h = h.trim();
-        if let Some(t) = h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")) {
+    if let Some(h) = authorization.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(t) = h
+            .strip_prefix("Bearer ")
+            .or_else(|| h.strip_prefix("bearer "))
+        {
             return t.trim().to_string();
         }
         return h.to_string();
@@ -50,27 +55,33 @@ pub fn extract_bearer(req: &Request) -> String {
     String::new()
 }
 
-fn unauthorized() -> Result<Response> {
-    Response::from_json(&serde_json::json!({"error": "unauthorized"}))
-        .map(|r| r.with_status(401))
+pub fn extract_bearer(req: &Request) -> String {
+    let x_summa = req.headers().get("X-Summa-Token").ok().flatten();
+    let authorization = req.headers().get("Authorization").ok().flatten();
+    token_from_headers(x_summa.as_deref(), authorization.as_deref())
 }
 
-pub async fn require_api_key(req: &Request, env: &Env) -> Result<ApiKeyAuth> {
+pub async fn require_api_key(
+    req: &Request,
+    env: &Env,
+) -> std::result::Result<ApiKeyAuth, AuthError> {
     let token = extract_bearer(req);
     if !token.starts_with(TOKEN_PREFIX) {
-        return Err(Error::RustError("unauthorized".into()));
+        return Err(AuthError::Unauthorized);
     }
     let hash = sha256_hex(&token);
-    let db = env.d1("DB")?;
+    let db = env.d1("DB").map_err(|_| AuthError::Unavailable)?;
     let row = db
         .prepare(
             "SELECT id, account_id, name, token_prefix, created_at, revoked_at FROM api_keys WHERE token_hash = ? AND revoked_at IS NULL",
         )
-        .bind(&[hash.into()])?
+        .bind(&[hash.into()])
+        .map_err(|_| AuthError::Unavailable)?
         .first::<ApiKeyRow>(None)
-        .await?;
+        .await
+        .map_err(|_| AuthError::Unavailable)?;
     let Some(row) = row else {
-        return Err(Error::RustError("unauthorized".into()));
+        return Err(AuthError::Unauthorized);
     };
     let _ = row.name;
     Ok(ApiKeyAuth {
@@ -79,34 +90,74 @@ pub async fn require_api_key(req: &Request, env: &Env) -> Result<ApiKeyAuth> {
     })
 }
 
-pub async fn require_session(req: &Request, env: &Env) -> Result<SessionAuth> {
+pub async fn require_session(
+    req: &Request,
+    env: &Env,
+) -> std::result::Result<SessionAuth, AuthError> {
     let token = extract_bearer(req);
     if token.is_empty() {
-        return Err(Error::RustError("unauthorized".into()));
+        return Err(AuthError::Unauthorized);
     }
     let bootstrap = opt_secret(env, "BOOTSTRAP_TOKEN");
     if !bootstrap.is_empty() && timing_safe_eq(&token, &bootstrap) {
-        let account = ensure_owner_account(env).await?;
+        let account = ensure_owner_account(env)
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
         return Ok(SessionAuth {
             account_id: account.id,
         });
     }
     if let Some(clerk) = verify_clerk_me(&token, env).await {
-        let account = ensure_clerk_account(env, &clerk.0, &clerk.1).await?;
+        let account = ensure_clerk_account(env, &clerk.0, &clerk.1)
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
         return Ok(SessionAuth {
             account_id: account.id,
         });
     }
-    Err(Error::RustError("unauthorized".into()))
+    Err(AuthError::Unauthorized)
 }
 
-pub fn auth_error_response(err: Error) -> Result<Response> {
-    let msg = err.to_string();
-    if msg.contains("unauthorized") {
-        unauthorized()
-    } else {
-        Response::from_json(&serde_json::json!({"error": msg})).map(|r| r.with_status(500))
+pub fn auth_error_status(err: AuthError) -> u16 {
+    match err {
+        AuthError::Unauthorized => 401,
+        AuthError::Unavailable => 503,
     }
+}
+
+pub fn auth_error_body(err: AuthError) -> &'static str {
+    match err {
+        AuthError::Unauthorized => "unauthorized",
+        AuthError::Unavailable => "auth unavailable",
+    }
+}
+
+/// Map leftover `worker::Error` strings (D1 deleted/misbound) to a public body.
+/// Never returns the original message — bindings and database ids stay off the wire.
+pub fn public_error_for_worker(msg: &str) -> (u16, &'static str) {
+    if is_store_failure(msg) {
+        (
+            auth_error_status(AuthError::Unavailable),
+            auth_error_body(AuthError::Unavailable),
+        )
+    } else {
+        (500, "internal error")
+    }
+}
+
+pub fn is_store_failure(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("auth unavailable")
+        || lower.contains("store unavailable")
+        || lower.contains("d1")
+        || (lower.contains("binding") && lower.contains("db"))
+        || (lower.contains("database")
+            && (lower.contains("deleted") || lower.contains("not found") || lower.contains("7404")))
+}
+
+pub fn auth_error_response(err: AuthError) -> Result<Response> {
+    Response::from_json(&serde_json::json!({ "error": auth_error_body(err) }))
+        .map(|r| r.with_status(auth_error_status(err)))
 }
 
 pub fn opt_secret(env: &Env, name: &str) -> String {
@@ -196,7 +247,11 @@ pub async fn is_owner_account(env: &Env, account_id: &str) -> Result<bool> {
     Ok(row.map(|r| r.id == account_id).unwrap_or(false))
 }
 
-pub async fn mint_api_key(env: &Env, account_id: &str, name: &str) -> Result<(String, String, String)> {
+pub async fn mint_api_key(
+    env: &Env,
+    account_id: &str,
+    name: &str,
+) -> Result<(String, String, String)> {
     let id = new_id();
     let mut raw = [0u8; 32];
     let _ = getrandom::fill(&mut raw);
@@ -258,9 +313,7 @@ pub async fn revoke_api_key(env: &Env, account_id: &str, key_id: &str) -> Result
     }
     let db = env.d1("DB")?;
     let existing = db
-        .prepare(
-            "SELECT id FROM api_keys WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
-        )
+        .prepare("SELECT id FROM api_keys WHERE id = ? AND account_id = ? AND revoked_at IS NULL")
         .bind(&[key_id.into(), account_id.into()])?
         .first::<KeyId>(None)
         .await?;
@@ -288,7 +341,10 @@ async fn verify_clerk_me(token: &str, env: &Env) -> Option<(String, String)> {
     let mut init = worker::RequestInit::new();
     init.with_method(worker::Method::Get);
     init.with_headers(headers);
-    for url in ["https://api.clerk.com/v1/me", "https://api.clerk.com/v1/users/me"] {
+    for url in [
+        "https://api.clerk.com/v1/me",
+        "https://api.clerk.com/v1/users/me",
+    ] {
         let req = worker::Request::new_with_init(url, &init).ok()?;
         let mut resp = worker::Fetch::Request(req).send().await.ok()?;
         if resp.status_code() != 200 {
@@ -304,4 +360,58 @@ async fn verify_clerk_me(token: &str, env: &Env) -> Option<(String, String)> {
         return Some((id.to_string(), name.to_string()));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_or_wrong_prefix_is_unauthorized() {
+        assert!(token_from_headers(None, None).is_empty());
+        assert!(!token_from_headers(Some("secret"), None).starts_with(TOKEN_PREFIX));
+        assert!(!token_from_headers(None, Some("Bearer secret")).starts_with(TOKEN_PREFIX));
+        assert_eq!(
+            token_from_headers(None, Some("Bearer summa_abc")),
+            "summa_abc"
+        );
+        assert_eq!(
+            token_from_headers(Some("summa_header"), Some("Bearer other")),
+            "summa_header"
+        );
+        assert_eq!(token_from_headers(None, Some("summa_raw")), "summa_raw");
+        assert!(token_from_headers(None, Some("Bearer summa_abc")).starts_with(TOKEN_PREFIX));
+    }
+
+    #[test]
+    fn auth_failures_are_not_500() {
+        assert_eq!(auth_error_status(AuthError::Unauthorized), 401);
+        assert_eq!(auth_error_body(AuthError::Unauthorized), "unauthorized");
+        assert_eq!(auth_error_status(AuthError::Unavailable), 503);
+        assert_eq!(auth_error_body(AuthError::Unavailable), "auth unavailable");
+    }
+
+    #[test]
+    fn missing_d1_does_not_leak_internals() {
+        let samples = [
+            "D1: D1Error { cause: JsValue(Error: D1 database 00000000-0000-0000-0000-000000000000 has been deleted.",
+            "Error 7404: The database could not be found",
+            "Binding `DB` not found",
+            "auth store unavailable",
+        ];
+        for sample in samples {
+            let (status, body) = public_error_for_worker(sample);
+            assert_eq!(status, 503, "{sample}");
+            assert_eq!(body, "auth unavailable");
+            let lower = body.to_ascii_lowercase();
+            assert!(!lower.contains("d1"), "{body}");
+            assert!(!lower.contains("deleted"), "{body}");
+            assert!(!lower.contains("7404"), "{body}");
+            assert!(!body.contains("00000000"), "{body}");
+            assert!(!body.contains('`'), "{body}");
+        }
+        let (status, body) = public_error_for_worker("wasm trap");
+        assert_eq!(status, 500);
+        assert_eq!(body, "internal error");
+    }
 }

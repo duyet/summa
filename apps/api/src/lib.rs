@@ -8,13 +8,13 @@ mod types;
 
 use analytics::{analytics_window, load_points, summarize};
 use auth::{
-    auth_error_response, is_owner_account, list_api_keys, mint_api_key, opt_var, require_api_key,
-    require_session, revoke_api_key,
+    auth_error_response, is_owner_account, list_api_keys, mint_api_key, opt_var,
+    public_error_for_worker, require_api_key, require_session, revoke_api_key,
 };
 use sinks::{collect_pings, fanout_write};
 use types::{
     ch_now, cors_allow_origin, ingest_body_too_large, ingest_status_code, ping_ok,
-    sanitize_event, stamp_ingest_identity, IngestBody, MAX_INGEST_EVENTS, VERSION,
+    stamp_ingest_identity, IngestParseError, VERSION,
 };
 
 #[event(fetch)]
@@ -24,15 +24,13 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if method == Method::Options {
         return apply_cors(origin.as_deref(), true, Response::empty()?.with_status(204));
     }
-    let public = matches!(
-        req.path().as_str(),
-        "/" | "/health" | "/install.sh"
-    );
+    let public = matches!(req.path().as_str(), "/" | "/health" | "/install.sh");
     match route(req, env).await {
         Ok(res) => apply_cors(origin.as_deref(), public, res),
-        Err(_) => {
-            let res = Response::from_json(&serde_json::json!({"error": "internal error"}))?
-                .with_status(500);
+        Err(e) => {
+            let (status, error) = public_error_for_worker(&e.to_string());
+            let res =
+                Response::from_json(&serde_json::json!({ "error": error }))?.with_status(status);
             apply_cors(origin.as_deref(), public, res)
         }
     }
@@ -106,33 +104,36 @@ async fn ingest(mut req: Request, env: Env) -> Result<Response> {
         }))
         .map(|r| r.with_status(413));
     }
-    let body: IngestBody = match req.json().await {
+    let bytes = match req.bytes().await {
         Ok(b) => b,
         Err(_) => {
-            return Response::from_json(&serde_json::json!({"error": "invalid json"}))
+            return Response::from_json(&serde_json::json!({"error": "invalid body"}))
                 .map(|r| r.with_status(400));
         }
     };
-    if body.events.len() > MAX_INGEST_EVENTS {
-        return Response::from_json(&serde_json::json!({
-            "error": "too many events",
-            "max": MAX_INGEST_EVENTS,
-        }))
-        .map(|r| r.with_status(413));
-    }
+    let parsed = match types::parse_ingest_bytes(&bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            let mut body = serde_json::json!({ "error": e.message() });
+            if e == IngestParseError::TooLarge {
+                body["max_bytes"] = types::MAX_INGEST_BYTES.into();
+            }
+            if e == IngestParseError::TooManyEvents {
+                body["max"] = types::MAX_INGEST_EVENTS.into();
+            }
+            return Response::from_json(&body).map(|r| r.with_status(e.status()));
+        }
+    };
     let now = ch_now();
-    let mut events = Vec::new();
-    for e in body.events {
-        let Some(mut e) = sanitize_event(e) else {
-            continue;
-        };
-        stamp_ingest_identity(&mut e, &auth.account_id, &auth.api_key_id, &now);
-        events.push(e);
+    let mut events = parsed.events;
+    for e in &mut events {
+        stamp_ingest_identity(e, &auth.account_id, &auth.api_key_id, &now);
     }
     let sinks = fanout_write(&env, &events).await;
     let code = ingest_status_code(&sinks);
     let res = Response::from_json(&serde_json::json!({
         "accepted": events.len(),
+        "rejected": parsed.rejected,
         "sinks": sinks,
     }))?;
     Ok(res.with_status(code))
@@ -161,15 +162,31 @@ async fn analytics(req: Request, env: Env, summary: bool) -> Result<Response> {
         .query_pairs()
         .find(|(k, _)| k == "until")
         .map(|(_, v)| v.into_owned());
-    let default_days = if summary { Some(days.unwrap_or(7)) } else { days };
+    let default_days = if summary {
+        Some(days.unwrap_or(7))
+    } else {
+        days
+    };
     let (since, until) = match analytics_window(since.as_deref(), until.as_deref(), default_days) {
         Ok(w) => w,
         Err(e) => {
-            return Response::from_json(&serde_json::json!({"error": e})).map(|r| r.with_status(400));
+            return Response::from_json(&serde_json::json!({"error": e}))
+                .map(|r| r.with_status(400));
         }
     };
-    let include_legacy = is_owner_account(&env, &auth.account_id).await.unwrap_or(false);
-    let points = match load_points(&env, &auth.account_id, include_legacy, &group, &since, &until).await {
+    let include_legacy = is_owner_account(&env, &auth.account_id)
+        .await
+        .unwrap_or(false);
+    let points = match load_points(
+        &env,
+        &auth.account_id,
+        include_legacy,
+        &group,
+        &since,
+        &until,
+    )
+    .await
+    {
         Ok(p) => p,
         Err(_) => {
             return Response::from_json(&serde_json::json!({"error": "analytics unavailable"}))
@@ -198,11 +215,7 @@ async fn create_key(mut req: Request, env: Env) -> Result<Response> {
         Ok(a) => a,
         Err(e) => return auth_error_response(e),
     };
-    let name = req
-        .json::<KeyName>()
-        .await
-        .unwrap_or_default()
-        .name;
+    let name = req.json::<KeyName>().await.unwrap_or_default().name;
     let (id, token, prefix) = mint_api_key(&env, &auth.account_id, &name).await?;
     Response::from_json(&serde_json::json!({ "id": id, "token": token, "prefix": prefix }))
 }

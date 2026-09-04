@@ -45,6 +45,7 @@ out="$(
 printf '%s\n' "$out"
 echo "$out" | grep -q 'dry-run: would download' || fail "install.sh dry-run missing marker"
 echo "$out" | grep -q 'releases/download/v0.1.1/summa-' || fail "install.sh dry-run missing release URL"
+echo "$out" | grep -q '.tar.gz.sha256' || fail "install.sh dry-run missing checksum URL"
 echo "$out" | grep -Eq 'target +: +(x86_64|aarch64)-(unknown-linux-gnu|apple-darwin)' \
   || fail "install.sh dry-run missing platform target"
 [[ -d "$install_dir" ]] || fail "install.sh dry-run did not create install dir"
@@ -59,6 +60,25 @@ mkdir -p "$www/beta/${asset}"
 printf '#!/bin/sh\necho summa 0.0.0-ci\n' > "$www/beta/${asset}/summa"
 chmod +x "$www/beta/${asset}/summa"
 tar -C "$www/beta" -czf "$www/beta/${asset}.tar.gz" "$asset"
+# CI writes GNU `shasum -a 256` sidecars next to the archive.
+(
+  cd "$www/beta"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
+  else
+    sha256sum "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
+  fi
+)
+mkdir -p "$www/mismatch/beta" "$www/nochecksum/beta" "$www/extra/beta"
+cp "$www/beta/${asset}.tar.gz" "$www/mismatch/beta/"
+cp "$www/beta/${asset}.tar.gz" "$www/nochecksum/beta/"
+cp "$www/beta/${asset}.tar.gz" "$www/extra/beta/"
+printf '%s  %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "${asset}.tar.gz" \
+  > "$www/mismatch/beta/${asset}.tar.gz.sha256"
+{
+  cat "$www/beta/${asset}.tar.gz.sha256"
+  printf '%s  %s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "other.tar.gz"
+} > "$www/extra/beta/${asset}.tar.gz.sha256"
 cp install.sh "$www/install.sh"
 portfile="$tmp/http.port"
 python3 - "$www" "$portfile" <<'PY' &
@@ -90,12 +110,69 @@ info_curl="$(
 )"
 printf '%s\n' "$info_curl"
 grep -q 'channel beta written' <<<"$info_curl" || fail "install.sh did not record update channel"
-kill "$http_pid" >/dev/null 2>&1 || true
-wait "$http_pid" >/dev/null 2>&1 || true
+grep -q 'checksum ok' <<<"$info_curl" || fail "install.sh did not verify sha256"
 [[ -x "$curl_bin/summa" ]] || fail "curl | bash did not install an executable"
 got="$("$curl_bin/summa")"
 [[ "$got" == "summa 0.0.0-ci" ]] || fail "installed stub printed: $got"
 ok "curl | bash install.sh"
+
+run_install() {
+  local prefix="$1" dest="$2"
+  env \
+    HOME="$tmp/home-${prefix}" \
+    SUMMA_DOWNLOAD_BASE="http://127.0.0.1:${port}/${prefix}" \
+    SUMMA_VERSION=beta \
+    SUMMA_INSTALL_DIR="$dest" \
+    bash install.sh
+}
+
+mismatch_bin="$tmp/mismatch-bin"
+mkdir -p "$mismatch_bin" "$tmp/home-mismatch"
+mismatch_out=""
+mismatch_rc=0
+if mismatch_out="$(run_install mismatch "$mismatch_bin" 2>&1)"; then
+  mismatch_rc=0
+else
+  mismatch_rc=$?
+fi
+printf '%s\n' "$mismatch_out"
+[ "$mismatch_rc" -ne 0 ] || fail "install.sh accepted a mismatched checksum"
+grep -q 'checksum mismatch' <<<"$mismatch_out" || fail "mismatch error missing 'checksum mismatch'"
+[[ ! -x "$mismatch_bin/summa" ]] || fail "mismatch install left a binary"
+ok "install.sh checksum mismatch is fatal"
+
+nochecksum_bin="$tmp/nochecksum-bin"
+mkdir -p "$nochecksum_bin" "$tmp/home-nochecksum"
+nocheck_out=""
+nocheck_rc=0
+if nocheck_out="$(run_install nochecksum "$nochecksum_bin" 2>&1)"; then
+  nocheck_rc=0
+else
+  nocheck_rc=$?
+fi
+printf '%s\n' "$nocheck_out"
+[ "$nocheck_rc" -ne 0 ] || fail "install.sh accepted an archive with no checksum"
+grep -q 'checksum not found' <<<"$nocheck_out" || fail "missing-sidecar error missing 'checksum not found'"
+[[ ! -x "$nochecksum_bin/summa" ]] || fail "missing-checksum install left a binary"
+ok "install.sh missing checksum is fatal"
+
+extra_bin="$tmp/extra-bin"
+mkdir -p "$extra_bin" "$tmp/home-extra"
+extra_out=""
+extra_rc=0
+if extra_out="$(run_install extra "$extra_bin" 2>&1)"; then
+  extra_rc=0
+else
+  extra_rc=$?
+fi
+printf '%s\n' "$extra_out"
+[ "$extra_rc" -ne 0 ] || fail "install.sh accepted a sidecar with extra records"
+grep -q 'exactly one checksum record' <<<"$extra_out" || fail "extra-record error missing 'exactly one checksum record'"
+[[ ! -x "$extra_bin/summa" ]] || fail "extra-record install left a binary"
+ok "install.sh extra checksum records are fatal"
+
+kill "$http_pid" >/dev/null 2>&1 || true
+wait "$http_pid" >/dev/null 2>&1 || true
 
 python3 - <<'PY'
 from pathlib import Path
@@ -180,6 +257,7 @@ echo "$rel" | grep -qE 'package .* -p summa-import|-p summa-import' \
   || fail "release.yml cargo package must use -p summa-import"
 echo "$rel" | grep -q -- '--bin summa' || fail "release.yml must build --bin summa"
 echo "$rel" | grep -q 'tag_name: beta' || fail "release.yml must publish rolling beta channel binaries"
+echo "$rel" | grep -q '.tar.gz.sha256' || fail "release.yml must publish .sha256 sidecars"
 
 ci="$(cat .github/workflows/ci.yml)"
 echo "$ci" | grep -qE 'cargo test .* -p summa-import' || fail "ci.yml cargo test must use -p summa-import"
@@ -190,3 +268,91 @@ ok "CI/release workflows pin -p summa-import"
 
 [[ -f apps/cli/README.md ]] || fail "apps/cli/README.md required for cargo package"
 ok "apps/cli README present for crates.io"
+
+python3 - <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+def ignored(path: str) -> bool:
+    return subprocess.run(
+        ["git", "check-ignore", "--no-index", "-q", path]
+    ).returncode == 0
+
+must_ignore = [
+    ".env",
+    ".env.bak",
+    ".env.local",
+    ".env.production",
+    ".env.backup",
+    ".dev.vars.bak",
+    "apps/api/.dev.vars.bak",
+    "credentials.toml",
+    "credentials.toml.bak",
+    "summa.credentials.toml",
+    "apps/other/examples/credentials.toml",
+]
+must_not_ignore = [
+    ".env.example",
+    "apps/api/.dev.vars.example",
+    "apps/cli/examples/credentials.toml",
+]
+failed = False
+for path in must_ignore:
+    if not ignored(path):
+        print(f"FAIL: {path} must be gitignored", file=sys.stderr)
+        failed = True
+for path in must_not_ignore:
+    if ignored(path):
+        print(f"FAIL: {path} must remain trackable", file=sys.stderr)
+        failed = True
+
+tracked = subprocess.check_output(["git", "ls-files"], text=True).splitlines()
+
+def forbidden_tracked(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    known_template = path == "apps/cli/examples/credentials.toml"
+    if name == ".env":
+        return True
+    if name.startswith(".env.") and name != ".env.example":
+        return True
+    if name == ".dev.vars":
+        return True
+    if name.startswith(".dev.vars.") and name != ".dev.vars.example":
+        return True
+    if name.endswith(".bak"):
+        return True
+    if name in {"credentials.toml", "summa.credentials.toml"} and not known_template:
+        return True
+    return False
+
+for path in tracked:
+    if forbidden_tracked(path):
+        print(f"FAIL: tracked secret-shaped path {path}", file=sys.stderr)
+        failed = True
+
+example = Path("apps/cli/examples/credentials.toml").read_text()
+if re.search(r"keep out of git", example, re.I):
+    print("FAIL: example credentials.toml must not say to keep the template out of git", file=sys.stderr)
+    failed = True
+placeholder = re.compile(
+    r"(?i)^(replace-me|change-me|changeme|change_me|.*[=]replace-me)$"
+)
+for i, line in enumerate(example.splitlines(), 1):
+    s = line.strip()
+    if not s or s.startswith("#") or "=" not in s:
+        continue
+    key, _, raw = s.partition("=")
+    val = raw.strip().strip('"').strip("'")
+    if not placeholder.match(val):
+        print(
+            f"FAIL: apps/cli/examples/credentials.toml:{i} key {key.strip()} is not a placeholder",
+            file=sys.stderr,
+        )
+        failed = True
+
+if failed:
+    sys.exit(1)
+print("ok: gitignore covers env/credential backups; example stays a placeholder template")
+PY

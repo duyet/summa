@@ -1,8 +1,14 @@
 .env
-.env.local
+.env.*
 !.env.example
 .dev.vars
+.dev.vars.*
 !.dev.vars.example
+credentials.toml
+credentials.toml.*
+summa.credentials.toml
+summa.credentials.toml.*
+!apps/cli/examples/credentials.toml
 node_modules/
 dist/
 .DS_Store

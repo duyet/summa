@@ -113,6 +113,69 @@ pub fn sha256_file(path: &Path) -> anyhow::Result<String> {
     Ok(sha256_hex(&bytes))
 }
 
+/// Path of the CI sidecar: `<archive>.tar.gz.sha256`.
+pub fn sha256_sidecar_path(archive: &Path) -> PathBuf {
+    let mut os = archive.as_os_str().to_os_string();
+    os.push(".sha256");
+    PathBuf::from(os)
+}
+
+pub fn sha256_sidecar_url(tarball_url: &str) -> String {
+    format!("{tarball_url}.sha256")
+}
+
+/// First field of a GNU `shasum -a 256` sidecar (`<hex>  dist/<asset>.tar.gz`).
+/// Exactly one non-empty record; extra lines (malformed or conflicting) fail closed.
+pub fn parse_sha256_sidecar(text: &str) -> anyhow::Result<String> {
+    let mut records = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let line = records
+        .next()
+        .ok_or_else(|| anyhow!("checksum file is empty"))?;
+    if records.next().is_some() {
+        bail!("malformed checksum file: expected exactly one checksum record");
+    }
+    let hex = line
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        bail!("malformed checksum file: expected 64 hex chars (GNU shasum -a 256), got {hex:?}");
+    }
+    Ok(hex)
+}
+
+pub fn verify_sha256(path: &Path, expected: &str) -> anyhow::Result<()> {
+    let actual = sha256_file(path)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        bail!(
+            "checksum mismatch for {} (expected {}, got {}). Refusing to install.",
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("archive"),
+            expected.to_ascii_lowercase(),
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn verify_tarball_sidecar(tar: &Path) -> anyhow::Result<()> {
+    let sidecar = sha256_sidecar_path(tar);
+    if !sidecar.is_file() {
+        bail!(
+            "checksum not found at {}. CI publishes a .sha256 sidecar next to every tarball.",
+            sidecar.display()
+        );
+    }
+    let text = fs::read_to_string(&sidecar)
+        .with_context(|| format!("read {}", sidecar.display()))?;
+    let expected = parse_sha256_sidecar(&text)?;
+    verify_sha256(tar, &expected)?;
+    println!("update: checksum ok ({expected})");
+    Ok(())
+}
+
 /// Successful completed runs from a GitHub Actions workflow-runs JSON body.
 pub fn parse_successful_runs(json: &str) -> anyhow::Result<Vec<WorkflowRun>> {
     let v: serde_json::Value = serde_json::from_str(json).context("parse workflow runs json")?;
@@ -382,7 +445,8 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
     let tmp = tempfile::tempdir()?;
     let bin = match pending {
         PendingUpdate::Stable { rel } => {
-            let tarball = download_release_tarball(&client, &rel.tarball_url, tmp.path()).await?;
+            let tarball =
+                download_and_verify_release_tarball(&client, &rel.tarball_url, tmp.path()).await?;
             extract_summa_from_tarball(&tarball, tmp.path())?
         }
         PendingUpdate::Beta {
@@ -391,7 +455,8 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
             artifact_id,
         } => {
             if let (Some(_tag), Some(url)) = (&tag, &tarball_url) {
-                let tarball = download_release_tarball(&client, url, tmp.path()).await?;
+                let tarball =
+                    download_and_verify_release_tarball(&client, url, tmp.path()).await?;
                 extract_summa_from_tarball(&tarball, tmp.path())?
             } else {
                 let token = token.ok_or_else(|| {
@@ -566,6 +631,29 @@ async fn download_release_tarball(
     Ok(path)
 }
 
+async fn download_and_verify_release_tarball(
+    client: &reqwest::Client,
+    tarball_url: &str,
+    dest_dir: &Path,
+) -> anyhow::Result<PathBuf> {
+    let tarball = download_release_tarball(client, tarball_url, dest_dir).await?;
+    let sidecar_url = sha256_sidecar_url(tarball_url);
+    let sidecar_path = sha256_sidecar_path(&tarball);
+    let resp = client.get(&sidecar_url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        bail!(
+            "checksum not found at {sidecar_url} (HTTP {status}). CI publishes a .sha256 sidecar next to every tarball."
+        );
+    }
+    let text = resp.text().await?;
+    fs::write(&sidecar_path, &text)?;
+    let expected = parse_sha256_sidecar(&text)?;
+    verify_sha256(&tarball, &expected)?;
+    println!("update: checksum ok ({expected})");
+    Ok(tarball)
+}
+
 /// Throttle file: records the last auto-update check as unix millis.
 pub fn auto_update_marker_path() -> PathBuf {
     dirs::data_local_dir()
@@ -729,6 +817,7 @@ fn extract_summa_from_artifact_zip(zip_path: &Path, dest_dir: &Path) -> anyhow::
     }
     let tar = find_named(dest_dir, ".tar.gz")
         .ok_or_else(|| anyhow!("artifact zip did not contain a .tar.gz"))?;
+    verify_tarball_sidecar(&tar)?;
     extract_summa_from_tarball(&tar, dest_dir)
 }
 
@@ -859,6 +948,52 @@ mod tests {
         assert_eq!(
             sha256_hex(b"summa"),
             "b44233a2f7cd626f6e8ddce9939e127388251740504e4af932fb75066509fa44"
+        );
+    }
+
+    #[test]
+    fn parse_sha256_sidecar_gnu_shasum() {
+        let text = "3f97eacb7335bd7e91de18f5703050da387d88e12733b8c4f893105adc34489c  dist/summa-x86_64-unknown-linux-gnu.tar.gz\n";
+        assert_eq!(
+            parse_sha256_sidecar(text).unwrap(),
+            "3f97eacb7335bd7e91de18f5703050da387d88e12733b8c4f893105adc34489c"
+        );
+        let crlf =
+            "AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899  file.tar.gz\r\n";
+        assert_eq!(
+            parse_sha256_sidecar(crlf).unwrap(),
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+        );
+        assert!(parse_sha256_sidecar("").is_err());
+        assert!(parse_sha256_sidecar("not-a-hash  file.tar.gz\n").is_err());
+        assert!(parse_sha256_sidecar("abc  file\n").is_err());
+        let extra = format!("{text}deadbeef  other.tar.gz\n");
+        assert!(parse_sha256_sidecar(&extra).is_err());
+        assert_eq!(
+            parse_sha256_sidecar(&format!("{text}\n\n")).unwrap(),
+            "3f97eacb7335bd7e91de18f5703050da387d88e12733b8c4f893105adc34489c"
+        );
+    }
+
+    #[test]
+    fn verify_sha256_match_and_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tar = tmp.path().join("summa-x86_64-unknown-linux-gnu.tar.gz");
+        std::fs::write(&tar, b"not-a-real-tar").unwrap();
+        let digest = sha256_file(&tar).unwrap();
+        let sidecar = format!("{digest}  dist/summa-x86_64-unknown-linux-gnu.tar.gz\n");
+        let expected = parse_sha256_sidecar(&sidecar).unwrap();
+        verify_sha256(&tar, &expected).unwrap();
+        let err = verify_sha256(&tar, &"0".repeat(64)).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("checksum mismatch"), "{msg}");
+        assert_eq!(
+            sha256_sidecar_path(&tar),
+            tar.with_file_name("summa-x86_64-unknown-linux-gnu.tar.gz.sha256")
+        );
+        assert_eq!(
+            sha256_sidecar_url("https://example/summa-x.tar.gz"),
+            "https://example/summa-x.tar.gz.sha256"
         );
     }
 

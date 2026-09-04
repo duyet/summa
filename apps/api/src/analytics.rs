@@ -48,11 +48,7 @@ pub fn inclusive_days(since: &str, until: &str) -> i64 {
     }
 }
 
-pub fn summarize(
-    since: &str,
-    until: &str,
-    points: &[AnalyticsPoint],
-) -> serde_json::Value {
+pub fn summarize(since: &str, until: &str, points: &[AnalyticsPoint]) -> serde_json::Value {
     let days = inclusive_days(since, until);
     let mut cost = 0.0;
     let mut total_tokens: u64 = 0;
@@ -85,14 +81,15 @@ pub fn summarize(
     })
 }
 
-pub async fn load_points(
-    env: &Env,
+/// Usage totals come from warehouse `ccusage_events`, never D1.
+pub fn usage_select_sql(
+    group: &str,
     account_id: &str,
     include_legacy: bool,
-    group: &str,
     since: &str,
     until: &str,
-) -> Result<Vec<AnalyticsPoint>> {
+    use_final: bool,
+) -> String {
     let extra = if group == "model" {
         "source, model_name"
     } else {
@@ -111,31 +108,47 @@ pub async fn load_points(
     } else {
         format!("account_id = {}", crate::types::sql_literal(account_id))
     };
-    let where_sql = format!(
-        "record_type = 'daily' AND date >= '{since}' AND date <= '{until}' AND {tenant}"
-    );
+    let where_sql =
+        format!("record_type = 'daily' AND date >= '{since}' AND date <= '{until}' AND {tenant}");
     let select = format!(
         "SELECT date, {extra}, sum(cost) AS cost, sum(total_tokens) AS total_tokens, sum(entries) AS entries \
          FROM ccusage_events"
     );
     let tail = format!(" WHERE {where_sql} GROUP BY {group_by} ORDER BY date, source");
+    if use_final {
+        format!("{select} FINAL{tail} FORMAT JSONEachRow")
+    } else {
+        format!("{select}{tail}")
+    }
+}
+
+pub async fn load_points(
+    env: &Env,
+    account_id: &str,
+    include_legacy: bool,
+    group: &str,
+    since: &str,
+    until: &str,
+) -> Result<Vec<AnalyticsPoint>> {
     let mut errors = Vec::new();
     if clickhouse_configured(env) {
-        let sql = format!("{select} FINAL{tail} FORMAT JSONEachRow");
+        let sql = usage_select_sql(group, account_id, include_legacy, since, until, true);
         match clickhouse_query(env, &sql).await {
             Ok(text) => return Ok(parse_analytics_payload(&text)),
             Err(e) => errors.push(format!("clickhouse: {e}")),
         }
     }
     if motherduck_configured(env) {
-        let sql = format!("{select}{tail}");
+        let sql = usage_select_sql(group, account_id, include_legacy, since, until, false);
         match motherduck_query(env, &sql).await {
             Ok(text) => return Ok(parse_analytics_payload(&text)),
             Err(e) => errors.push(format!("motherduck: {e}")),
         }
     }
     if errors.is_empty() {
-        return Err(worker::Error::RustError("no analytics sink configured".into()));
+        return Err(worker::Error::RustError(
+            "no analytics sink configured".into(),
+        ));
     }
     Err(worker::Error::RustError(errors.join("; ")))
 }
@@ -182,5 +195,37 @@ mod tests {
         assert_eq!(v["cost"], 10.0);
         assert_eq!(v["cost_per_day"], 1.0);
         assert_eq!(v["entries"], 2);
+    }
+
+    #[test]
+    fn usage_sql_reads_ccusage_events_not_d1() {
+        let ch = usage_select_sql("source", "acc-1", true, "2026-01-01", "2026-01-07", true);
+        assert!(ch.contains("FROM ccusage_events FINAL"));
+        assert!(ch.contains("FORMAT JSONEachRow"));
+        assert!(ch.contains("(account_id = 'acc-1' OR account_id = '')"));
+        let lower = ch.to_ascii_lowercase();
+        assert!(!lower.contains("from events"));
+        assert!(!lower.contains("api_keys"));
+        assert!(!lower.contains("from accounts"));
+
+        let md = usage_select_sql("model", "acc-2", false, "2026-02-01", "2026-02-02", false);
+        assert!(md.contains("FROM ccusage_events WHERE"));
+        assert!(!md.contains(" FINAL"));
+        assert!(!md.contains("FORMAT JSONEachRow"));
+        assert!(md.contains("account_id = 'acc-2'"));
+        assert!(md.contains("GROUP BY date, source, model_name"));
+        assert!(!md.contains("api_keys"));
+    }
+
+    #[test]
+    fn summary_from_store_fixture_does_not_invent_cost() {
+        let text = "{\"date\":\"2026-01-01\",\"source\":\"cursor\",\"cost\":2.5,\"total_tokens\":9,\"entries\":1}\n{\"date\":\"2026-01-01\",\"source\":\"grok\",\"cost\":1.25,\"total_tokens\":3,\"entries\":2}\n";
+        let points = parse_analytics_payload(text);
+        let v = summarize("2026-01-01", "2026-01-01", &points);
+        assert_eq!(v["cost"], 3.75);
+        assert_eq!(v["total_tokens"], 12);
+        assert_eq!(v["entries"], 3);
+        assert_eq!(v["cost_per_day"], 3.75);
+        assert_eq!(v["days"], 1);
     }
 }
