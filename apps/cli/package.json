@@ -5,7 +5,7 @@
   "scripts": {
     "build": "cargo build --locked --bin summa --manifest-path Cargo.toml",
     "check": "cargo check --locked --manifest-path Cargo.toml",
-    "test": "cargo test --locked --manifest-path Cargo.toml -- --test-threads=1",
+    "test": "cargo test --locked --manifest-path Cargo.toml",
     "dev": "cargo run --manifest-path Cargo.toml -- import --verbose"
   }
 }

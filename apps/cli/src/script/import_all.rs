@@ -258,6 +258,7 @@ pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
             since: effective_since.clone(),
             end_date: end_date.clone(),
             import_id: import_id.clone(),
+            base_dir: None,
         })));
     }
 
@@ -511,6 +512,7 @@ mod tests {
 
     #[test]
     fn default_duckdb_is_local_not_motherduck() {
+        let _env = crate::test_env::EnvLock::isolate_summa();
         let path = crate::config::Config::resolve_duckdb_path(None);
         assert!(
             !path.starts_with("md:"),
@@ -526,26 +528,7 @@ mod tests {
     fn prepare_import_applies_config_and_credentials_files() {
         use std::io::Write;
 
-        // Isolate from ambient env secrets/paths.
-        const KEYS: &[&str] = &[
-            "CH_HOST",
-            "CH_PORT",
-            "CH_USER",
-            "CH_PASSWORD",
-            "CH_DATABASE",
-            "CH_PROTOCOL",
-            "DUCKDB_PATH",
-            "MOTHERDUCK_TOKEN",
-            "IMPORT_DAYS_BACK",
-            "IMPORT_MACHINE_NAME",
-            "SUMMA_CONFIG",
-            "SUMMA_CREDENTIALS",
-            "CCUSAGE_IMPORT_CONFIG",
-        ];
-        let prev: Vec<Option<String>> = KEYS.iter().map(|k| env::var(k).ok()).collect();
-        for k in KEYS {
-            let _ = env::remove_var(k);
-        }
+        let _env = crate::test_env::EnvLock::isolate_summa();
 
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("summa.toml");
@@ -651,32 +634,13 @@ motherduck_token = "md-from-credentials"
             env::var("MOTHERDUCK_TOKEN").ok().as_deref(),
             Some("md-from-credentials")
         );
-
-        // Restore ambient env.
-        for (key, prev_val) in KEYS.iter().zip(prev) {
-            match prev_val {
-                Some(v) => env::set_var(key, v),
-                None => env::remove_var(key),
-            }
-        }
     }
 
     #[test]
     fn prepare_import_cli_overrides_config_duckdb_and_days() {
         use std::io::Write;
 
-        const KEYS: &[&str] = &[
-            "CH_HOST",
-            "CH_PASSWORD",
-            "DUCKDB_PATH",
-            "SUMMA_CONFIG",
-            "SUMMA_CREDENTIALS",
-            "CCUSAGE_IMPORT_CONFIG",
-        ];
-        let prev: Vec<Option<String>> = KEYS.iter().map(|k| env::var(k).ok()).collect();
-        for k in KEYS {
-            let _ = env::remove_var(k);
-        }
+        let _env = crate::test_env::EnvLock::isolate_summa();
 
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("summa.toml");
@@ -717,13 +681,6 @@ days_back = 30
         assert_eq!(prepared.duckdb_path, "/from/cli.duckdb");
         assert_eq!(prepared.days_back, Some(2));
         assert!(prepared.skip_clickhouse);
-
-        for (key, prev_val) in KEYS.iter().zip(prev) {
-            match prev_val {
-                Some(v) => env::set_var(key, v),
-                None => env::remove_var(key),
-            }
-        }
     }
 
     fn skip_all_import_args() -> ImportArgs {

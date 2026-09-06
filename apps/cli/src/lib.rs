@@ -16,6 +16,9 @@ pub mod source;
 pub mod telemetry;
 pub mod util;
 
+#[cfg(test)]
+pub(crate) mod test_env;
+
 pub use model::{
     DataSink, DataSource, EventRow, EventsSnapshotData, PipelineResult, SinkResult, SourceResult,
 };

@@ -561,9 +561,13 @@ impl Config {
     }
 
     pub fn interpolate_env(input: &str) -> String {
+        Self::interpolate_env_with(input, |k| std::env::var(k).ok())
+    }
+
+    fn interpolate_env_with(input: &str, env_lookup: impl Fn(&str) -> Option<String>) -> String {
         let re = regex::Regex::new(r"\$\{([^}]+)\}").expect("valid env interpolation regex");
         re.replace_all(input, |caps: &regex::Captures<'_>| {
-            std::env::var(&caps[1]).unwrap_or_else(|_| caps[0].to_string())
+            env_lookup(&caps[1]).unwrap_or_else(|| caps[0].to_string())
         })
         .to_string()
     }
@@ -818,38 +822,8 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use crate::test_env::EnvLock;
     use std::io::Write;
-
-    struct EnvGuard {
-        keys: &'static [&'static str],
-        prev: Vec<Option<String>>,
-    }
-
-    impl EnvGuard {
-        fn new(keys: &'static [&'static str]) -> Self {
-            let prev = keys.iter().map(|k| env::var(k).ok()).collect();
-            for key in keys {
-                let _ = env::remove_var(key);
-            }
-            Self { keys, prev }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            for (key, prev_val) in self.keys.iter().zip(self.prev.drain(..)) {
-                match prev_val {
-                    Some(v) => {
-                        let _ = env::set_var(key, v);
-                    }
-                    None => {
-                        let _ = env::remove_var(key);
-                    }
-                }
-            }
-        }
-    }
 
     #[test]
     fn empty_toml_returns_defaults() {
@@ -887,9 +861,9 @@ mod tests {
 
     #[test]
     fn env_interpolation_replaces_placeholders() {
-        let _guard = EnvGuard::new(&["MY_CH_HOST", "MY_CH_DB"]);
-        env::set_var("MY_CH_HOST", "db.example.com");
-        env::set_var("MY_CH_DB", "prod");
+        let mut env_map: HashMap<String, String> = HashMap::new();
+        env_map.insert("MY_CH_HOST".into(), "db.example.com".into());
+        env_map.insert("MY_CH_DB".into(), "prod".into());
         let toml_str = r#"
             [clickhouse]
             host = "${MY_CH_HOST}"
@@ -899,14 +873,14 @@ mod tests {
             database = "${MY_CH_DB}"
             protocol = "http"
         "#;
-        let cfg: Config = toml::from_str(&Config::interpolate_env(toml_str)).unwrap();
+        let interpolated = Config::interpolate_env_with(toml_str, |k| env_map.get(k).cloned());
+        let cfg: Config = toml::from_str(&interpolated).unwrap();
         assert_eq!(cfg.clickhouse.host, "db.example.com");
         assert_eq!(cfg.clickhouse.database, "prod");
     }
 
     #[test]
     fn env_interpolation_keeps_placeholder_on_missing() {
-        let _guard = EnvGuard::new(&["MISSING_VAR"]);
         let toml_str = r#"
             [clickhouse]
             host = "${MISSING_VAR}"
@@ -916,21 +890,13 @@ mod tests {
             database = "analytics"
             protocol = "http"
         "#;
-        let cfg: Config = toml::from_str(&Config::interpolate_env(toml_str)).unwrap();
+        let interpolated = Config::interpolate_env_with(toml_str, |_| None);
+        let cfg: Config = toml::from_str(&interpolated).unwrap();
         assert_eq!(cfg.clickhouse.host, "${MISSING_VAR}");
     }
 
     #[test]
     fn apply_env_fallback_when_fields_empty() {
-        const KEYS: &[&str] = &[
-            "CH_HOST",
-            "CH_PORT",
-            "CH_DATABASE",
-            "DUCKDB_PATH",
-            "IMPORT_MACHINE_NAME",
-        ];
-        let _guard = EnvGuard::new(KEYS);
-
         let mut env_map: HashMap<String, String> = HashMap::new();
         env_map.insert("CH_HOST".into(), "env-host".into());
         env_map.insert("CH_PORT".into(), "8443".into());
@@ -1003,6 +969,7 @@ mod tests {
 
     #[test]
     fn credentials_fill_password_separately_from_main_config() {
+        let _env = EnvLock::isolate_summa();
         let dir = tempfile::tempdir().unwrap();
         let config_path = dir.path().join("config.toml");
         let creds_path = dir.path().join("credentials.toml");
@@ -1045,7 +1012,6 @@ motherduck_token = "md-token-xyz"
             std::env::var("MOTHERDUCK_TOKEN").ok().as_deref(),
             Some("md-token-xyz")
         );
-        let _ = env::remove_var("MOTHERDUCK_TOKEN");
     }
 
     #[test]
@@ -1060,11 +1026,13 @@ motherduck_token = "md-token-xyz"
 
     #[test]
     fn resolve_duckdb_path_prefers_explicit_over_default() {
+        let _env = EnvLock::isolate_summa();
         let p = Config::resolve_duckdb_path(Some("md:cloud-db"));
         assert_eq!(p, "md:cloud-db");
         let local = Config::resolve_duckdb_path(Some(""));
-        // empty explicit falls through to env or default
+        // empty explicit falls through to default (DUCKDB_PATH isolated)
         assert!(!local.is_empty());
+        assert!(!local.starts_with("md:"));
     }
 
     #[test]
@@ -1131,11 +1099,11 @@ motherduck_token = "md-token-xyz"
 
     #[test]
     fn update_channel_env_fallback() {
-        let _guard = EnvGuard::new(&["SUMMA_UPDATE_CHANNEL", "SUMMA_UPDATE_MODE"]);
+        let env = EnvLock::isolate_summa();
         let cfg = Config::default();
-        std::env::set_var("SUMMA_UPDATE_CHANNEL", "stable");
+        env.set("SUMMA_UPDATE_CHANNEL", "stable");
         assert_eq!(cfg.update_channel(), UpdateChannel::Stable);
-        std::env::set_var("SUMMA_UPDATE_MODE", "auto");
+        env.set("SUMMA_UPDATE_MODE", "auto");
         assert_eq!(cfg.update_mode(), UpdateMode::Auto);
     }
 
@@ -1180,32 +1148,21 @@ motherduck_token = "md-token-xyz"
 
     #[test]
     fn load_missing_file_returns_defaults() {
-        let _guard = EnvGuard::new(&[
-            "CH_HOST",
-            "CH_PORT",
-            "CH_USER",
-            "CH_PASSWORD",
-            "CH_DATABASE",
-            "CH_PROTOCOL",
-            "DUCKDB_PATH",
-            "IMPORT_MACHINE_NAME",
-            CONFIG_ENV,
-            LEGACY_CONFIG_ENV,
-            CREDENTIALS_ENV,
-        ]);
+        let env = EnvLock::isolate_summa();
         // Isolated empty file — `load(None)` would pick up a live XDG config.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("empty.toml");
         std::fs::write(&path, "").unwrap();
         let creds = dir.path().join("credentials.toml");
         std::fs::write(&creds, "").unwrap();
-        std::env::set_var(CREDENTIALS_ENV, creds.to_str().unwrap());
+        env.set(CREDENTIALS_ENV, creds.to_str().unwrap());
         let cfg = Config::load(Some(path.to_str().unwrap())).unwrap();
         assert!(cfg.clickhouse.host.is_empty());
     }
 
     #[test]
     fn credentials_candidate_paths_include_xdg() {
+        let _env = EnvLock::isolate_summa();
         let paths = Credentials::candidate_paths();
         assert!(paths.iter().any(|p| p.ends_with("credentials.toml")));
     }
@@ -1309,9 +1266,11 @@ impl SinkRoutes {
 #[cfg(test)]
 mod sink_routes_tests {
     use super::*;
+    use crate::test_env::EnvLock;
 
     #[test]
     fn routes_local_when_configured() {
+        let _env = EnvLock::isolate_summa();
         let cfg = Config {
             sinks: SinksConfig {
                 routes: vec!["local".into()],
@@ -1350,6 +1309,7 @@ mod sink_routes_tests {
 
     #[test]
     fn routes_clickhouse_when_host_set() {
+        let _env = EnvLock::isolate_summa();
         let cfg = Config {
             sinks: SinksConfig {
                 routes: vec!["clickhouse".into()],
