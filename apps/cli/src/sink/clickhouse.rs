@@ -2,7 +2,7 @@ use crate::config::ClickHouseConfig;
 use crate::model::{DataSink, EventRow, EventsSnapshotData, SinkResult};
 use async_trait::async_trait;
 use reqwest::Client;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const CH_DELETE_BATCH: usize = 50;
 
@@ -201,7 +201,7 @@ impl ClickHouseSink {
     /// Distinct `(date, record_type, source, machine_name)` scopes present in `rows`.
     fn scopes_of(rows: &[EventRow]) -> Vec<(String, String, String, String)> {
         let mut scopes = Vec::new();
-        let mut seen: HashMap<(String, String, String, String), ()> = HashMap::new();
+        let mut seen: HashSet<(String, String, String, String)> = HashSet::new();
         for row in rows {
             let key = (
                 row.date.clone(),
@@ -209,7 +209,7 @@ impl ClickHouseSink {
                 row.source.clone(),
                 row.machine_name.clone(),
             );
-            if seen.insert(key, ()).is_none() {
+            if seen.insert(key.clone()) {
                 scopes.push(key);
             }
         }
