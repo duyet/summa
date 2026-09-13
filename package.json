@@ -51,7 +51,7 @@
     "ink": "^7.0.0",
     "ora": "^9.0.0",
     "react": "^19.0.0",
-    "react-devtools-core": "^7.0.0",
+    "react-devtools-core": "^8.0.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
