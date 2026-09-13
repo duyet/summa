@@ -257,13 +257,14 @@
       <a href="#install">install</a>
       <a href="#channels">channels</a>
       <a href="#keys">keys</a>
+      <a href="https://burn.duyet.net">analytics</a>
       <span class="spacer"></span>
       <span class="user" id="nav-user" hidden></span>
       <button class="copy signin-nav" id="signin-nav" type="button" hidden>sign in</button>
     </nav>
 
     <h1>AI coding-agent usage,<br>one <em>ccusage_events</em> table.</h1>
-    <p class="tag">summa reads Claude Code, Codex, OpenCode, Cursor, Grok and more on every machine you use, then lands daily, session and per-model rows in local DuckDB — with an optional cloud double-write to ClickHouse + MotherDuck.</p>
+    <p class="tag">summa reads Claude Code, Codex, OpenCode, Cursor, Grok and more on every machine you use, then lands daily, session and per-model rows in local DuckDB — with an optional cloud double-write to ClickHouse + MotherDuck. The result of this project is the live spend dashboard at <a href="https://burn.duyet.net">burn.duyet.net</a>.</p>
 
     <div class="install" id="install">
       <code><span class="prompt">$</span> curl -fsSL https://summa.duyet.net/install.sh | bash</code>
@@ -304,7 +305,7 @@
 
     <div class="prose">
       <p>summa (Latin: sum, total) is a small Rust CLI. It reads agent logs locally, explodes model breakdowns into rows, dedups by key, and writes one table: <code>ccusage_events</code>. Monthly rollups are just SQL — <code>toYYYYMM(date)</code>.</p>
-      <p>This host is the cloud hub: machines POST with a token, the worker stamps the tenant, and usage lands in ClickHouse and MotherDuck — that's what powers burn.duyet.net. D1 stores keys only.</p>
+      <p>This host is the cloud hub: machines POST with a token, the worker stamps the tenant, and usage lands in ClickHouse and MotherDuck. The analytics product of that pipeline is <a href="https://burn.duyet.net">burn.duyet.net</a>. D1 stores keys only.</p>
     </div>
 
     <div class="rule">* * *</div>

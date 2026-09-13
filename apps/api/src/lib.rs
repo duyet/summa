@@ -318,12 +318,26 @@ mod tests {
         // Demo terminal mirrors real output: summa — machine: …
         assert!(html.contains("=== Summary ==="));
         assert!(html.contains("sink summa-cloud: 341 rows"));
-        // Menu: install is an in-page anchor; burn linked only from footer.
         assert!(html.contains("href=\"#install\""));
-        assert_eq!(
-            html.matches("https://burn.duyet.net").count(),
-            1,
-            "burn only linked from the footer"
+        assert!(
+            html.contains("href=\"https://burn.duyet.net\""),
+            "burn.duyet.net must be a real href"
+        );
+        assert!(
+            html.contains("The result of this project is the live spend dashboard at"),
+            "hero must frame burn.duyet.net as the project result"
+        );
+        assert!(
+            html.contains("The analytics product of that pipeline is"),
+            "body must name burn as the analytics product"
+        );
+        assert!(
+            html.contains(">analytics</a>"),
+            "nav must link analytics to burn.duyet.net"
+        );
+        assert!(
+            html.matches("href=\"https://burn.duyet.net\"").count() >= 3,
+            "burn must appear as nav, hero, body, not only footer"
         );
         assert!(!html.contains("__CLERK_NOTE__"));
         assert!(!html.contains("__CLERK_PK__"));
