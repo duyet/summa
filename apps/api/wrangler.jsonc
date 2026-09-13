@@ -10,7 +10,7 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "summa-telemetry",
-    "database_id": "0ebf1a61-74cf-43d5-b3bd-decec245be3d",
+    "database_id": "02547ac8-2e01-4f9c-b3aa-bb17bf4a841b",
     "migrations_dir": "migrations"
   }],
   "vars": {
