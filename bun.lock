@@ -8,7 +8,7 @@
         "@clickhouse/client": "^1.10.0",
         "chalk": "^6.0.0",
         "commander": "^15.0.0",
-        "dotenv": "^17.0.0",
+        "dotenv": "^18.0.0",
         "duckdb": "^1.4.4",
         "duckdb-async": "^1.4.2",
         "ink": "^7.0.0",
@@ -419,7 +419,7 @@
 
     "doctrine": ["doctrine@2.1.0", "", { "dependencies": { "esutils": "^2.0.2" } }, "sha512-35mSku4ZXK0vfCuHEDAwt55dg2jNajHZ1odvF+8SSr82EsZY4QmXfuWso8oEd8zRhVObSN18aM0CjSdoBX7zIw=="],
 
-    "dotenv": ["dotenv@17.4.2", "", {}, "sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw=="],
+    "dotenv": ["dotenv@18.0.1", "", { "bin": { "dotenv": "dist/index.cjs" } }, "sha512-0eR4m4D/jH5eaI3evo2ZqqMii5mrTCR12v12VChdie6O1gPHs7XAjzTep0CWc1Bd+oNx3vVfbi734dK4zghigw=="],
 
     "duckdb": ["duckdb@1.4.4", "", { "dependencies": { "@mapbox/node-pre-gyp": "^2.0.0", "node-addon-api": "^7.0.0", "node-gyp": "^9.4.1" } }, "sha512-hEJJ5hyVF0VLj3dmOLpsWrQR0b3d4Ykqtygm6iUXjHJDDnSqg/USKxcb5qvNrOhFYPgktayU6dXCtgPqcmmpog=="],
 
