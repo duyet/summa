@@ -17,6 +17,7 @@ pub struct CompanionModelBreakdown {
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
     pub reasoning_tokens: u64,
+    pub extra_total_tokens: u64,
     pub cost: f64,
 }
 
@@ -253,6 +254,7 @@ pub fn normalize_model_breakdowns(raw: &Value) -> Vec<CompanionModelBreakdown> {
                         "reasoningTokens", "reasoningOutputTokens", "thoughtsTokens",
                         "reasoning_tokens",
                     ]),
+                    extra_total_tokens: get_number(obj, &["extraTotalTokens", "extra_total_tokens"]),
                     cost: get_cost(obj, &["cost", "costUSD", "totalCost"]),
                 }
             } else {
@@ -281,6 +283,7 @@ pub fn normalize_model_breakdowns(raw: &Value) -> Vec<CompanionModelBreakdown> {
                     "reasoningTokens", "reasoningOutputTokens", "thoughtsTokens",
                     "reasoning_tokens",
                 ]),
+                extra_total_tokens: get_number(v, &["extraTotalTokens", "extra_total_tokens"]),
                 cost: get_cost(v, &["cost", "costUSD", "totalCost"]),
             }
         }).collect();
@@ -373,12 +376,13 @@ mod tests {
     #[test]
     fn normalize_model_breakdowns_aliases() {
         let out = normalize_model_breakdowns(&json!([
-            {"model": "m", "input_tokens": 5, "cachedInputTokens": 7}
+            {"model": "m", "input_tokens": 5, "cachedInputTokens": 7, "extraTotalTokens": 9}
         ]));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].model_name, "m");
         assert_eq!(out[0].input_tokens, 5);
         assert_eq!(out[0].cache_read_tokens, 7);
+        assert_eq!(out[0].extra_total_tokens, 9);
     }
 
     #[test]
