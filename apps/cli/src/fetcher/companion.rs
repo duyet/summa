@@ -138,8 +138,28 @@ pub async fn fetch_all_companion_data(
         }
     }
 
-    let daily = fetch_command(source, CompanionCommand::Daily, &runner, &env, &date_flags, timeout_dur, max_retries, verbose).await;
-    let session = fetch_command(source, CompanionCommand::Session, &runner, &env, &date_flags, timeout_dur, max_retries, verbose).await;
+    let daily = fetch_command(
+        source,
+        CompanionCommand::Daily,
+        &runner,
+        &env,
+        &date_flags,
+        timeout_dur,
+        max_retries,
+        verbose,
+    )
+    .await?;
+    let session = fetch_command(
+        source,
+        CompanionCommand::Session,
+        &runner,
+        &env,
+        &date_flags,
+        timeout_dur,
+        max_retries,
+        verbose,
+    )
+    .await?;
 
     Ok(CompanionData {
         daily,
@@ -161,40 +181,37 @@ async fn fetch_command(
     timeout_dur: Duration,
     max_retries: u32,
     verbose: bool,
-) -> Vec<CompanionUsageRow> {
+) -> anyhow::Result<Vec<CompanionUsageRow>> {
     let mut last_err = None;
+    let attempts = max_retries.max(1);
 
-    for attempt in 0..max_retries {
+    for attempt in 0..attempts {
         match run_once(source, command, runner, env, date_flags, timeout_dur).await {
             Ok(raw) => {
                 let raw_rows = normalize_companion_rows(command, &raw);
-                if !raw_rows.is_empty() {
-                    return raw_rows
-                        .into_iter()
-                        .map(|v| normalize_usage_row(command, &v))
-                        .collect();
-                }
-                last_err = Some("empty normalized rows".to_string());
-                if attempt < max_retries - 1 {
-                    sleep_backoff(attempt).await;
-                }
+                return Ok(raw_rows
+                    .into_iter()
+                    .map(|v| normalize_usage_row(command, &v))
+                    .collect());
             }
             Err(e) => {
                 last_err = Some(e.to_string());
-                if attempt < max_retries - 1 {
+                if attempt + 1 < attempts {
                     sleep_backoff(attempt).await;
                 }
             }
         }
     }
 
+    let error = last_err.unwrap_or_else(|| "unknown fetch failure".to_string());
     if verbose {
-        if let Some(ref e) = last_err {
-            eprintln!("{} {} failed: {}", source, command.as_str(), e);
-        }
+        eprintln!("{} {} failed: {}", source, command.as_str(), error);
     }
-
-    vec![]
+    Err(anyhow::anyhow!(
+        "{} {} failed after {attempts} attempt(s): {error}",
+        source.as_str(),
+        command.as_str(),
+    ))
 }
 
 async fn run_once(
