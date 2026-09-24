@@ -409,6 +409,18 @@
       signinNav.addEventListener("click", openClerk);
       signinKeys.addEventListener("click", openClerk);
 
+      function sessionHeaders(headers) {
+        if (!clerk || !clerk.session || !clerk.session.getToken) {
+          return Promise.resolve(headers);
+        }
+        return clerk.session.getToken().then(function (token) {
+          if (token) {
+            headers.Authorization = "Bearer " + token;
+          }
+          return headers;
+        });
+      }
+
       var form = document.getElementById("keyform");
       form.addEventListener("submit", function (e) {
         e.preventDefault();
@@ -416,10 +428,13 @@
         out.className = "out";
         out.textContent = "minting…";
         var name = document.getElementById("keyname").value.trim() || "default";
-        fetch("/v1/keys", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: name }),
+        var headers = { "content-type": "application/json" };
+        sessionHeaders(headers).then(function (headers) {
+          return fetch("/v1/keys", {
+            method: "POST",
+            headers: headers,
+            body: JSON.stringify({ name: name }),
+          });
         }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
           .then(function (x) {
             if (!x.ok) {

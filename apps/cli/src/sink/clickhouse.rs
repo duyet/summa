@@ -18,6 +18,22 @@ fn percent_encode(input: &str) -> String {
     out
 }
 
+fn clickhouse_request_url(base_url: &str, database: &str, query: Option<&str>) -> String {
+    let mut url = format!("{}/", base_url.trim_end_matches('/'));
+    let mut params = Vec::new();
+    if let Some(query) = query {
+        params.push(format!("query={}", percent_encode(query)));
+    }
+    if !database.is_empty() {
+        params.push(format!("database={}", percent_encode(database)));
+    }
+    if !params.is_empty() {
+        url.push('?');
+        url.push_str(&params.join("&"));
+    }
+    url
+}
+
 /// Escape a single-quoted SQL string literal by doubling embedded quotes.
 fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
@@ -93,6 +109,14 @@ impl ClickHouseSink {
         format!("{}://{}:{}", cfg.protocol, cfg.host, cfg.port)
     }
 
+    fn request_url(&self, query: Option<&str>) -> String {
+        let cfg = self
+            .config
+            .as_ref()
+            .expect("ClickHouseSink not connected");
+        clickhouse_request_url(&self.base_url(), &cfg.database, query)
+    }
+
     async fn run_query(&self, query: &str) -> anyhow::Result<()> {
         let client = self
             .client
@@ -101,7 +125,7 @@ impl ClickHouseSink {
         // POST the SQL as the body so reqwest sends Content-Length. A query-string
         // POST with no body is rejected by ClickHouse HTTP as 411 Length Required.
         client
-            .post(self.base_url())
+            .post(self.request_url(None))
             .basic_auth(
                 self.config
                     .as_ref()
@@ -124,7 +148,7 @@ impl ClickHouseSink {
             .client
             .as_ref()
             .expect("ClickHouseSink not connected");
-        let url = format!("{}/?query={}", self.base_url(), percent_encode(query));
+        let url = self.request_url(Some(query));
         client
             .post(&url)
             .basic_auth(
@@ -143,19 +167,7 @@ impl ClickHouseSink {
     }
 
     fn select_url(&self) -> String {
-        let cfg = self
-            .config
-            .as_ref()
-            .expect("ClickHouseSink not connected");
-        if cfg.database.is_empty() {
-            format!("{}/", self.base_url())
-        } else {
-            format!(
-                "{}/?database={}",
-                self.base_url(),
-                percent_encode(&cfg.database)
-            )
-        }
+        self.request_url(None)
     }
 
     pub async fn query_text(&self, query: &str) -> anyhow::Result<String> {
@@ -288,10 +300,7 @@ impl ClickHouseSink {
             .client
             .as_ref()
             .expect("ClickHouseSink not connected");
-        let url = format!(
-            "{}/?query=INSERT+INTO+ccusage_events+FORMAT+JSONEachRow",
-            self.base_url()
-        );
+        let url = self.request_url(Some("INSERT INTO ccusage_events FORMAT JSONEachRow"));
 
         // Serialize each row as a JSON object on its own line.
         let mut body = String::with_capacity(rows.len() * 512);
@@ -424,6 +433,19 @@ mod tests {
             import_id: import_id.into(),
             ..EventRow::default()
         }
+    }
+
+    #[test]
+    fn request_url_includes_database_for_queries_and_inserts() {
+        let read = clickhouse_request_url("http://clickhouse:8123", "duyet analytics", None);
+        assert_eq!(read, "http://clickhouse:8123/?database=duyet+analytics");
+        let write = clickhouse_request_url(
+            "http://clickhouse:8123",
+            "duyet analytics",
+            Some("INSERT INTO ccusage_events FORMAT JSONEachRow"),
+        );
+        assert!(write.contains("query=INSERT+INTO+ccusage_events+FORMAT+JSONEachRow"));
+        assert!(write.contains("database=duyet+analytics"));
     }
 
     #[test]

@@ -5,7 +5,8 @@
  * - Breakdown rows: one per model per record, reasoning_tokens=0 for ccusage
  * - Block rows: use the source's own totalTokens (not the formula)
  * - Dedup keys: SHA-256 of `source|machine|record_type|date|model|record_key`
- * - total_tokens: input + output + cacheCreation + cacheRead (no reasoning)
+ * - total_tokens: input + output + cacheCreation + cacheRead (no reasoning),
+ *   plus source-reported extra tokens for companion rows
  * - distribute_cost: proportional, last row absorbs rounding
  */
 
@@ -32,6 +33,7 @@ pub struct BreakdownInput {
     pub output_tokens: u64,
     pub cache_creation_tokens: u64,
     pub cache_read_tokens: u64,
+    pub extra_total_tokens: u64,
     pub cost: f64,
 }
 
@@ -43,6 +45,7 @@ impl From<&ModelBreakdown> for BreakdownInput {
             output_tokens: bd.output_tokens,
             cache_creation_tokens: bd.cache_creation_tokens,
             cache_read_tokens: bd.cache_read_tokens,
+            extra_total_tokens: 0,
             cost: bd.cost,
         }
     }
@@ -56,6 +59,7 @@ impl From<&CompanionModelBreakdown> for BreakdownInput {
             output_tokens: bd.output_tokens,
             cache_creation_tokens: bd.cache_creation_tokens,
             cache_read_tokens: bd.cache_read_tokens,
+            extra_total_tokens: bd.extra_total_tokens,
             cost: bd.cost,
         }
     }
@@ -142,7 +146,13 @@ fn breakdown_row(
         cache_creation_tokens: bd.cache_creation_tokens,
         cache_read_tokens: bd.cache_read_tokens,
         reasoning_tokens,
-        total_tokens: total_tokens(bd.input_tokens, bd.output_tokens, bd.cache_creation_tokens, bd.cache_read_tokens),
+        total_tokens: total_tokens(
+            bd.input_tokens,
+            bd.output_tokens,
+            bd.cache_creation_tokens,
+            bd.cache_read_tokens,
+        )
+        .saturating_add(bd.extra_total_tokens),
         cost: bd.cost,
         dedup_key,
         import_id: import_id.to_string(),
@@ -241,8 +251,35 @@ fn fallback_companion_breakdown(row: &CompanionUsageRow) -> CompanionModelBreakd
         cache_creation_tokens: row.cache_creation_tokens,
         cache_read_tokens: row.cache_read_tokens,
         reasoning_tokens: row.reasoning_tokens,
+        extra_total_tokens: 0,
         cost: row.total_cost,
     }
+}
+
+fn companion_breakdowns(row: &CompanionUsageRow) -> Vec<CompanionModelBreakdown> {
+    let mut breakdowns = if row.model_breakdowns.is_empty() {
+        vec![fallback_companion_breakdown(row)]
+    } else {
+        row.model_breakdowns.clone()
+    };
+    let known_total = breakdowns.iter().fold(0u64, |sum, breakdown| {
+        sum.saturating_add(
+            total_tokens(
+                breakdown.input_tokens,
+                breakdown.output_tokens,
+                breakdown.cache_creation_tokens,
+                breakdown.cache_read_tokens,
+            )
+            .saturating_add(breakdown.extra_total_tokens),
+        )
+    });
+    let residual = row.total_tokens.saturating_sub(known_total);
+    if residual > 0 {
+        if let Some(last) = breakdowns.last_mut() {
+            last.extra_total_tokens = last.extra_total_tokens.saturating_add(residual);
+        }
+    }
+    breakdowns
 }
 
 /// Create fallback ModelBreakdown from a SessionUsage (used only in fallback path).
@@ -533,11 +570,7 @@ pub fn build_companion_event_rows(
         }
         let date = parse_date(date_str).unwrap_or_default();
 
-        let mut breakdowns: Vec<CompanionModelBreakdown> = if !item.model_breakdowns.is_empty() {
-            item.model_breakdowns.clone()
-        } else {
-            vec![fallback_companion_breakdown(item)]
-        };
+        let mut breakdowns = companion_breakdowns(item);
         distribute_and_write(&mut breakdowns, item.total_cost);
 
         for bd in &breakdowns {
@@ -575,11 +608,7 @@ pub fn build_companion_event_rows(
         }
         let date = parse_date(date_str).unwrap_or_default();
 
-        let mut breakdowns: Vec<CompanionModelBreakdown> = if !item.model_breakdowns.is_empty() {
-            item.model_breakdowns.clone()
-        } else {
-            vec![fallback_companion_breakdown(item)]
-        };
+        let mut breakdowns = companion_breakdowns(item);
         distribute_and_write(&mut breakdowns, item.total_cost);
 
         for bd in &breakdowns {
@@ -935,6 +964,7 @@ mod tests {
                     cache_creation_tokens: 10,
                     cache_read_tokens: 20,
                     reasoning_tokens: 0,
+                    extra_total_tokens: 0,
                     cost: 0.01,
                 }],
                 ..Default::default()
@@ -970,6 +1000,7 @@ mod tests {
                     cache_creation_tokens: 0,
                     cache_read_tokens: 2214272,
                     reasoning_tokens: 17062,
+                    extra_total_tokens: 0,
                     cost: 0.66,
                 }],
                 ..Default::default()
@@ -982,6 +1013,40 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].total_tokens, 2717719); // 469867+33580+0+2214272
         assert_eq!(rows[0].reasoning_tokens, 17062);
+    }
+
+    #[test]
+    fn companion_preserves_parent_total_when_model_breakdown_omits_extra_tokens() {
+        let data = CompanionData {
+            daily: vec![CompanionUsageRow {
+                date: Some("2026-09-24".to_string()),
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_creation_tokens: 10,
+                cache_read_tokens: 20,
+                total_tokens: 200,
+                total_cost: 0.01,
+                models_used: vec!["opencode-model".to_string()],
+                model_breakdowns: vec![CompanionModelBreakdown {
+                    model_name: "opencode-model".to_string(),
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_creation_tokens: 10,
+                    cache_read_tokens: 20,
+                    reasoning_tokens: 0,
+                    extra_total_tokens: 0,
+                    cost: 0.01,
+                }],
+                ..Default::default()
+            }],
+            monthly: vec![],
+            session: vec![],
+        };
+
+        let rows = build_companion_event_rows(&data, "machine-1", "opencode", false, "");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].total_tokens, 200);
+        assert_eq!(rows[0].output_tokens, 50);
     }
 
     #[test]

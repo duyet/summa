@@ -291,6 +291,30 @@ fn clickhouse_base_url(env: &Env) -> String {
     format!("{proto}://{host}:{port}/")
 }
 
+fn build_clickhouse_url(base_url: &str, database: &str, query: Option<&str>) -> String {
+    let mut url = base_url.to_string();
+    let mut params = Vec::new();
+    if let Some(query) = query {
+        params.push(format!("query={}", urlencoding(query)));
+    }
+    if !database.is_empty() {
+        params.push(format!("database={}", urlencoding(database)));
+    }
+    if !params.is_empty() {
+        url.push('?');
+        url.push_str(&params.join("&"));
+    }
+    url
+}
+
+fn clickhouse_request_url(env: &Env, query: Option<&str>) -> String {
+    build_clickhouse_url(
+        &clickhouse_base_url(env),
+        &opt_secret(env, "CH_DATABASE"),
+        query,
+    )
+}
+
 fn apply_clickhouse_headers(env: &Env, headers: &Headers) -> std::result::Result<(), String> {
     let user = opt_secret(env, "CH_USER");
     let pass = opt_secret(env, "CH_PASSWORD");
@@ -328,11 +352,7 @@ pub fn clickhouse_access_configured(id: &str, secret: &str) -> bool {
 }
 
 pub async fn clickhouse_query(env: &Env, sql: &str) -> std::result::Result<String, String> {
-    let db = opt_secret(env, "CH_DATABASE");
-    let mut url = clickhouse_base_url(env);
-    if !db.is_empty() {
-        url.push_str(&format!("?database={}", urlencoding(&db)));
-    }
+    let url = clickhouse_request_url(env, None);
     clickhouse_post(env, &url, sql).await
 }
 
@@ -342,9 +362,9 @@ async fn clickhouse_insert(env: &Env, rows: &[EventRow]) -> std::result::Result<
         body.push_str(&serde_json::to_string(row).map_err(|e| e.to_string())?);
         body.push('\n');
     }
-    let url = format!(
-        "{}?query=INSERT+INTO+ccusage_events+FORMAT+JSONEachRow",
-        clickhouse_base_url(env).trim_end_matches('/')
+    let url = clickhouse_request_url(
+        env,
+        Some("INSERT INTO ccusage_events FORMAT JSONEachRow"),
     );
     clickhouse_post(env, &url, &body).await.map(|_| ())
 }
@@ -811,6 +831,19 @@ mod tests {
         assert_eq!(clickhouse_default_port("https", ""), "443");
         assert_eq!(clickhouse_default_port("http", ""), "8123");
         assert_eq!(clickhouse_default_port("https", "8443"), "8443");
+    }
+
+    #[test]
+    fn clickhouse_url_includes_database_for_reads_and_writes() {
+        let read = build_clickhouse_url("https://clickhouse:8443/", "duyet analytics", None);
+        assert_eq!(read, "https://clickhouse:8443/?database=duyet%20analytics");
+        let write = build_clickhouse_url(
+            "https://clickhouse:8443/",
+            "duyet analytics",
+            Some("INSERT INTO ccusage_events FORMAT JSONEachRow"),
+        );
+        assert!(write.contains("query=INSERT%20INTO%20ccusage_events%20FORMAT%20JSONEachRow"));
+        assert!(write.contains("database=duyet%20analytics"));
     }
 
     #[test]

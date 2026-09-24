@@ -348,6 +348,8 @@ mod tests {
     fn dashboard_with_clerk_injects_script_and_signin() {
         let html = super::dashboard_html("pk_test_x", "0.1.2");
         assert!(html.contains("data-clerk-publishable-key=\"pk_test_x\""));
+        assert!(html.contains("clerk.session.getToken"));
+        assert!(html.contains("headers.Authorization"));
         assert!(!html.contains("__CLERK_PK__"));
         let bare = super::dashboard_html("", "0.1.2");
         assert!(!bare.contains("clerk.browser.js"));

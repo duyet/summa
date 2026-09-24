@@ -222,7 +222,7 @@ fn build_date_flags(since: &Option<String>, end_date: &Option<String>) -> String
         parts.push(format!("--since={}", s));
     }
     if let Some(ref e) = end_date {
-        parts.push(format!("--end-date={}", e));
+        parts.push(format!("--until={}", e));
     }
     if parts.is_empty() {
         String::new()
@@ -297,7 +297,7 @@ mod tests {
     fn build_date_flags_both() {
         assert_eq!(
             build_date_flags(&Some("2025-01-01".into()), &Some("2025-01-31".into())),
-            " --since=2025-01-01 --end-date=2025-01-31"
+            " --since=2025-01-01 --until=2025-01-31"
         );
     }
 
