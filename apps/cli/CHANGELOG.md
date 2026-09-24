@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.4](https://github.com/duyet/summa/compare/v0.1.3...v0.1.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* **cli:** preserve OpenCode token totals ([6754e32](https://github.com/duyet/summa/commit/6754e32a5357ebf80bd02af4d6990e1dd245a035))
+* **cli:** surface companion fetch failures ([994ae4f](https://github.com/duyet/summa/commit/994ae4f04963f20b20fe7f834db58968f13e59bc))
+* **cli:** surface companion fetch failures ([bfc9bc2](https://github.com/duyet/summa/commit/bfc9bc26344e5bc29a74153b62fe0fee227b7fcf))
+* **storage:** target configured ClickHouse database ([a15fbea](https://github.com/duyet/summa/commit/a15fbeac508e3bb83c2ef94846531e207e24a1c7))
+* **telemetry:** make OpenCode ingestion observable ([c8589fb](https://github.com/duyet/summa/commit/c8589fb046ad8898bea5a43aa4b31ccb0cf72cc6))
+
 ## [0.1.3](https://github.com/duyet/summa/compare/v0.1.2...v0.1.3) (2026-09-17)
 
 
