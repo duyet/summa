@@ -48,7 +48,7 @@ Plugin: sources → pipeline runner → sinks. Single table `ccusage_events`.
 
 - CLI crate: `apps/cli` (`summa-import`, binary `summa`)
 - API Worker: `apps/api` (`summa-api`, `workers-rs` wasm)
-- Sources: `apps/cli/src/source/{ccusage,companion,antigravity,hermes,grok,grok_api,cursor}.rs`
+- Sources: `apps/cli/src/source/{ccusage,companion,antigravity,hermes,grok,grok_api,cursor,devin}.rs`
 - Sinks: `apps/cli/src/sink/{clickhouse,duckdb,csv}.rs`
 - Types: `apps/cli/src/model.rs` — `EventRow`
 
@@ -61,6 +61,7 @@ Plugin: sources → pipeline runner → sinks. Single table `ccusage_events`.
 - Companion packages may print log lines before JSON — parser skips to first `{`/`[`
 - Grok Build: `~/.grok` / `GROK_HOME` — `logs/unified.jsonl` (`shell.turn.inference_done`) + session `summary.json` for model/cwd; tokens: input=`prompt-cached`, cache_read=`cached`, output=`completion`, total=`prompt+completion` (reasoning not double-counted); `--skip-grok`. Optional account-wide CLI-proxy billing (`grok-api`) is imported only when the JSON has countable spend/tokens — credits-percent payloads are skipped (no fabricated turns).
 - Cursor (account-wide, `machine_name=account`): dashboard `POST https://cursor.com/api/dashboard/get-filtered-usage-events` (session/cookie or Cursor.app `state.vscdb` JWT) or Admin `POST https://api.cursor.com/teams/filtered-usage-events`; surfaces `cursor` / `cursor-cloud-agent` / `cursor-api` / `cursor-grok-bot`; `--skip-cursor`. Missing auth skips the source.
+- Devin CLI (`source=devin`, `~/.local/share/devin/cli` or `DEVIN_HOME`): install `curl -fsSL https://cli.devin.ai/install.sh | bash`, then `devin setup` (headless: `--force-manual-token-flow`). Tokens come only from ATIF transcripts — read **both** `agent_logs/devin-<sid>.json` (current `--export` default) and `transcripts/<sid>.json` (older default); same session in both is imported once, larger `final_metrics` wins. `sessions.db` (read-only) adds `project_path` / model / date and is optional. Prompt is cache-inclusive: `input = total_prompt_tokens - total_cached_tokens`, `cache_read = total_cached_tokens`, `total = prompt + completion` (reasoning not reported). `sessions.metadata` credit/ACU cost is `0` under zero-data-retention, so USD comes from `util::pricing` public rates (or `final_metrics.total_cost_usd` when sane). No transcript → no row, never estimated. `--skip-devin`. Details: `docs/knowledge/devin.md`.
 - Monthly not fetched — derivable via `toYYYYMM(date)` SQL
 
 ## Code style

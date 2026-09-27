@@ -53,7 +53,18 @@ motherduck_token = "…"
 # telemetry_token = "…"
 ```
 
-Keep **Cursor** and **Grok** enabled on every host. Account-wide Cursor rows use `machine_name=account`. DuckDB delete-by-key and ClickHouse ReplacingMergeTree collapse duplicates. Do not set `skip_cursor` to “avoid double-count”.
+Keep **Cursor**, **Grok** and **Devin** enabled on every host. Account-wide Cursor rows use `machine_name=account`. DuckDB delete-by-key and ClickHouse ReplacingMergeTree collapse duplicates. Do not set `skip_cursor` to “avoid double-count”.
+
+### Optional agent CLIs
+
+`summa` reads each agent's local files, so install the CLI on the machine first. Missing or unauthenticated CLIs just skip their source — they never fail the import.
+
+```bash
+curl -fsSL https://cli.devin.ai/install.sh | bash    # Devin CLI → ~/.local/bin/devin
+brew install --cask devin-cli                       # macOS alternative
+```
+
+Then authenticate once per machine: `devin setup`, or on a headless host `devin setup --force-manual-token-flow`. Verify with `devin auth status`. See `docs/knowledge/devin.md`.
 
 ## 3. Cron
 

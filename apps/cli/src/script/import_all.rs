@@ -14,6 +14,7 @@ use crate::source::antigravity::{AntigravitySource, AntigravitySourceOptions};
 use crate::source::ccusage::{CcusageSource, CcusageSourceOptions};
 use crate::source::companion::{CompanionSource as CompanionDataSource, CompanionSourceOptions};
 use crate::source::cursor::{CursorSource, CursorSourceOptions};
+use crate::source::devin::{DevinSource, DevinSourceOptions};
 use crate::source::grok::{GrokSource, GrokSourceOptions};
 use crate::source::grok_api::{GrokApiSource, GrokApiSourceOptions};
 use crate::source::hermes::{HermesSource, HermesSourceOptions};
@@ -281,6 +282,19 @@ pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
         })));
     }
 
+    if !args.skip_devin {
+        sources.push(Box::new(DevinSource::new(DevinSourceOptions {
+            machine_name: machine_name.clone(),
+            hash_projects,
+            verbose,
+            days_back,
+            since: effective_since.clone(),
+            end_date: end_date.clone(),
+            import_id: import_id.clone(),
+            base_dir: None,
+        })));
+    }
+
     if !args.skip_cursor {
         sources.push(Box::new(CursorSource::new(CursorSourceOptions {
             verbose,
@@ -404,6 +418,7 @@ pub fn apply_importer_skips(args: &mut ImportArgs, cfg: &crate::config::Importer
     args.skip_antigravity |= cfg.skip_antigravity.unwrap_or(false);
     args.skip_hermes |= cfg.skip_hermes.unwrap_or(false);
     args.skip_grok |= cfg.skip_grok.unwrap_or(false);
+    args.skip_devin |= cfg.skip_devin.unwrap_or(false);
     args.skip_cursor |= cfg.skip_cursor.unwrap_or(false);
 }
 
@@ -430,6 +445,9 @@ pub fn enabled_source_ids(args: &ImportArgs) -> Vec<&'static str> {
     if !args.skip_grok {
         ids.push("grok");
         ids.push("grok-api");
+    }
+    if !args.skip_devin {
+        ids.push("devin");
     }
     if !args.skip_cursor {
         ids.push("cursor");
@@ -590,6 +608,7 @@ motherduck_token = "md-from-credentials"
             skip_antigravity: true,
             skip_hermes: true,
             skip_grok: true,
+            skip_devin: true,
             skip_cursor: true,
             skip_clickhouse: false,
             skip_duckdb: false,
@@ -671,6 +690,7 @@ days_back = 30
             skip_antigravity: true,
             skip_hermes: true,
             skip_grok: true,
+            skip_devin: true,
             skip_cursor: true,
             skip_clickhouse: true,
             skip_duckdb: false,
@@ -699,6 +719,7 @@ days_back = 30
             skip_antigravity: true,
             skip_hermes: true,
             skip_grok: true,
+            skip_devin: true,
             skip_cursor: true,
             skip_clickhouse: true,
             skip_duckdb: true,
@@ -759,5 +780,43 @@ days_back = 30
             }
             _ => panic!("expected Import"),
         }
+    }
+
+    #[test]
+    fn skip_devin_omits_devin_source() {
+        let mut args = skip_all_import_args();
+        args.skip_devin = true;
+        args.skip_grok = false;
+        let ids = enabled_source_ids(&args);
+        assert!(!ids.contains(&"devin"));
+        assert!(ids.contains(&"grok"));
+    }
+
+    #[test]
+    fn default_import_registers_devin() {
+        let cli = Cli::try_parse_from(["summa", "import"]).expect("default import must parse");
+        match cli.command {
+            Commands::Import(args) => {
+                assert!(!args.skip_devin);
+                let ids = enabled_source_ids(&args);
+                assert!(ids.contains(&"devin"), "devin must be on by default: {ids:?}");
+            }
+            _ => panic!("expected Import"),
+        }
+    }
+
+    #[test]
+    fn config_skip_devin_omits_devin_source() {
+        let mut args = skip_all_import_args();
+        args.skip_devin = false;
+        args.skip_grok = false;
+        let cfg = crate::config::ImporterConfig {
+            skip_devin: Some(true),
+            ..Default::default()
+        };
+        apply_importer_skips(&mut args, &cfg);
+        let ids = enabled_source_ids(&args);
+        assert!(!ids.contains(&"devin"));
+        assert!(ids.contains(&"grok"));
     }
 }

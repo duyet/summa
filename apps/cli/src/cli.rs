@@ -142,6 +142,9 @@ pub struct ImportArgs {
     /// Skip Grok Build source
     #[arg(long)]
     pub skip_grok: bool,
+    /// Skip Devin CLI source
+    #[arg(long)]
+    pub skip_devin: bool,
     /// Skip Cursor account-wide usage source
     #[arg(long)]
     pub skip_cursor: bool,
@@ -218,6 +221,7 @@ mod tests {
             skip_antigravity: false,
             skip_hermes: false,
             skip_grok: false,
+            skip_devin: false,
             skip_cursor: false,
             skip_clickhouse: false,
             skip_duckdb: false,
@@ -305,6 +309,15 @@ mod tests {
                 assert!(args.skip_cursor);
                 assert!(args.skip_grok);
             }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clap_accepts_skip_devin() {
+        let cli = Cli::try_parse_from(["summa", "import", "--skip-devin"]).unwrap();
+        match cli.command {
+            Commands::Import(args) => assert!(args.skip_devin),
             other => panic!("expected Import, got {other:?}"),
         }
     }
