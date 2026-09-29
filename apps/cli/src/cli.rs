@@ -148,6 +148,12 @@ pub struct ImportArgs {
     /// Skip Cursor account-wide usage source
     #[arg(long)]
     pub skip_cursor: bool,
+    /// Skip Pi coding agent source
+    #[arg(long)]
+    pub skip_pi: bool,
+    /// Skip fx (Vercel Labs) source
+    #[arg(long)]
+    pub skip_fx: bool,
     /// Skip ClickHouse sink
     #[arg(long)]
     pub skip_clickhouse: bool,
@@ -223,6 +229,8 @@ mod tests {
             skip_grok: false,
             skip_devin: false,
             skip_cursor: false,
+            skip_pi: false,
+            skip_fx: false,
             skip_clickhouse: false,
             skip_duckdb: false,
             dry_run: false,
@@ -318,6 +326,18 @@ mod tests {
         let cli = Cli::try_parse_from(["summa", "import", "--skip-devin"]).unwrap();
         match cli.command {
             Commands::Import(args) => assert!(args.skip_devin),
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clap_accepts_skip_pi_and_skip_fx() {
+        let cli = Cli::try_parse_from(["summa", "import", "--skip-pi", "--skip-fx"]).unwrap();
+        match cli.command {
+            Commands::Import(args) => {
+                assert!(args.skip_pi);
+                assert!(args.skip_fx);
+            }
             other => panic!("expected Import, got {other:?}"),
         }
     }

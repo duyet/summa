@@ -151,6 +151,9 @@ pub fn rates_for_model(model: &str) -> ModelRates {
 }
 
 /// Estimate USD cost from token breakdown + model name.
+///
+/// Returns the precise value: callers sum many per-record costs into a row, so
+/// rounding here would round away small turns before they are ever added up.
 pub fn estimate_model_cost(
     model: &str,
     input_tokens: u64,
@@ -159,21 +162,30 @@ pub fn estimate_model_cost(
     output_tokens: u64,
 ) -> f64 {
     let rates = rates_for_model(model);
-    let cost = (input_tokens as f64 / 1_000_000.0) * rates.input
+    (input_tokens as f64 / 1_000_000.0) * rates.input
         + (cache_read_tokens as f64 / 1_000_000.0) * rates.cache_read
         + (cache_write_tokens as f64 / 1_000_000.0) * rates.cache_write
-        + (output_tokens as f64 / 1_000_000.0) * rates.output;
-    round_cents(cost)
+        + (output_tokens as f64 / 1_000_000.0) * rates.output
 }
 
 fn round_cents(cost: f64) -> f64 {
     (cost * 100.0).round() / 100.0
 }
 
+/// Reported cost below this is never rejected on a per-token basis.
+///
+/// A "blended $/1M" sanity check is only meaningful once the amount is large
+/// enough for the ratio to mean something: a genuine $0.25 request on 150
+/// tokens is $1667/1M, which looks insane but is just an expensive model on a
+/// tiny sample. Real corruption (Hermes' wild estimates) shows up in the
+/// dollars, not the ratio.
+const RATIO_CHECK_FLOOR_USD: f64 = 1.0;
+
 /// Hermes sometimes stores wild `estimated_cost_usd` values.
 /// Prefer reported cost when sane; otherwise fall back to token estimate.
 ///
-/// "Sane" = positive and ≤ 50× the token estimate, and ≤ $200 blended per 1M tokens.
+/// "Sane" = positive, and not implausible per-token spend once the amount is
+/// large enough for a per-token ratio to carry information.
 pub fn resolve_reported_cost(
     model: &str,
     reported: f64,
@@ -201,15 +213,17 @@ pub fn resolve_reported_cost(
         return 0.0;
     }
 
-    let blended_per_m = reported / (total as f64 / 1_000_000.0);
-    if blended_per_m > 200.0 {
-        return estimated;
-    }
-    if estimated > 0.0 && reported > estimated * 50.0 {
-        return estimated;
+    if reported > RATIO_CHECK_FLOOR_USD {
+        let blended_per_m = reported / (total as f64 / 1_000_000.0);
+        if blended_per_m > 200.0 {
+            return estimated;
+        }
+        if estimated > 0.0 && reported > estimated * 50.0 {
+            return estimated;
+        }
     }
 
-    round_cents(reported)
+    reported
 }
 
 #[cfg(test)]
@@ -253,5 +267,48 @@ mod tests {
     fn resolve_keeps_sane_reported() {
         let c = resolve_reported_cost("@preset/hermes-agent", 1.25, 500_000, 0, 0, 100_000);
         assert!((c - 1.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn small_reported_cost_is_kept_despite_a_high_per_token_ratio() {
+        // $0.25 on 150 tokens is $1667/1M — a high ratio that a naive guard
+        // reads as corruption. It is just a real cost on a tiny sample, and
+        // rejecting it silently zeroed a day of spend.
+        let c = resolve_reported_cost("anthropic/claude-sonnet-4-5", 0.25, 100, 30, 0, 20);
+        assert!((c - 0.25).abs() < 1e-9, "got {c}");
+    }
+
+    #[test]
+    fn large_reported_cost_still_rejected_when_per_token_rate_is_impossible() {
+        // The same ratio on real dollars is still corruption and must fall back.
+        let c = resolve_reported_cost("claude-sonnet-4-5", 500.0, 1_000, 0, 0, 0);
+        let estimated = estimate_model_cost("claude-sonnet-4-5", 1_000, 0, 0, 0);
+        assert!(
+            (c - estimated).abs() < 1e-9,
+            "expected fallback to estimate {estimated}, got {c}"
+        );
+    }
+
+    #[test]
+    fn per_record_costs_are_not_rounded_to_cents() {
+        // Sources sum many per-turn costs into one row. Rounding each turn to
+        // cents first rounds $0.0006 turns to $0.00 and loses real money.
+        let turn = estimate_model_cost("claude-sonnet-4-5", 1, 0, 0, 1);
+        assert!(
+            turn > 0.0 && turn < 0.01,
+            "a single-token turn must keep sub-cent precision, got {turn}"
+        );
+        let hundred = estimate_model_cost("claude-sonnet-4-5", 100, 0, 0, 100);
+        assert!(hundred > 0.0, "100 turns must not sum to zero");
+    }
+
+    #[test]
+    fn gateway_prefixed_model_names_still_resolve() {
+        // fx logs models as "provider/model". The prefix must not push the
+        // lookup into the free tier.
+        let r = rates_for_model("anthropic/claude-sonnet-4-5");
+        assert!(r.input > 0.0 && r.output > 0.0);
+        let g = rates_for_model("openai/gpt-5.5");
+        assert!(g.input > 0.0, "unknown openai models must not be free");
     }
 }

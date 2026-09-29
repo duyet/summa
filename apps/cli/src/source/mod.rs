@@ -3,6 +3,8 @@ pub mod companion;
 pub mod antigravity;
 pub mod cursor;
 pub mod devin;
+pub mod fx;
 pub mod grok;
 pub mod grok_api;
 pub mod hermes;
+pub mod pi;

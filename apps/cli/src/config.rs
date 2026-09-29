@@ -197,6 +197,8 @@ pub struct ImporterConfig {
     pub skip_grok: Option<bool>,
     pub skip_devin: Option<bool>,
     pub skip_cursor: Option<bool>,
+    pub skip_pi: Option<bool>,
+    pub skip_fx: Option<bool>,
     pub skip_clickhouse: Option<bool>,
     pub opencode_path: Option<String>,
     pub codex_path: Option<String>,
