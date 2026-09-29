@@ -25,6 +25,15 @@ use crate::util::date::resolve_effective_since;
 use std::env;
 
 /// Companion agents registered by default (mirrors TS `CCUSAGE_AGENT_SOURCES`).
+/// Agents read through the `ccusage` subprocess.
+///
+/// `CompanionSource::Pi` is deliberately absent: pi is now read natively by
+/// `source::pi`, which dedupes forked transcripts and counts the `usage`,
+/// `compaction` and `branch_summary` entries that all bill. Registering both
+/// would put two independent parsers on the same `source = "pi"` rows, and
+/// whichever finished last would win — so a parser that miscounts forks could
+/// silently inflate the dashboard. `companion_source_ids` guards against
+/// reintroducing the overlap.
 const COMPANION_AGENTS: &[CompanionSource] = &[
     CompanionSource::Codex,
     CompanionSource::OpenCode,
@@ -33,7 +42,6 @@ const COMPANION_AGENTS: &[CompanionSource] = &[
     CompanionSource::Amp,
     CompanionSource::Droid,
     CompanionSource::Codebuff,
-    CompanionSource::Pi,
     CompanionSource::Goose,
     CompanionSource::Kilo,
     CompanionSource::Copilot,
@@ -530,6 +538,44 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    #[test]
+    fn no_source_name_is_registered_twice() {
+        // Two sources emitting the same `source` value write the same
+        // dedup_key, so one silently overwrites the other and which row
+        // survives depends on which finished last. pi hit exactly this: the
+        // `ccusage` companion and the native reader both claimed "pi".
+        let mut names: Vec<&str> = vec![
+            "ccusage",
+            "antigravity",
+            "hermes",
+            "grok",
+            "devin",
+            "cursor",
+            "pi",
+            "fx",
+            "command-code",
+        ];
+        names.extend(COMPANION_AGENTS.iter().map(|a| a.as_str()));
+        let mut seen = std::collections::HashSet::new();
+        for name in &names {
+            assert!(seen.insert(*name), "source `{name}` is registered twice");
+        }
+    }
+
+    #[test]
+    fn companion_source_ids_exclude_natively_covered_agents() {
+        let ids: Vec<&str> = COMPANION_AGENTS.iter().map(|a| a.as_str()).collect();
+        for native in ["pi", "command-code", "fx"] {
+            assert!(
+                !ids.contains(&native),
+                "`{native}` is read natively and must not also run via ccusage"
+            );
+        }
+        // Sanity: the list is still populated and still covers codex.
+        assert!(ids.len() >= 10);
+        assert!(ids.contains(&"codex"));
+    }
 
     #[test]
     fn clap_accepts_days_back_and_duckdb_path() {
