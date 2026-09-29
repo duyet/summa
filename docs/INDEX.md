@@ -14,7 +14,8 @@
 - `docs/knowledge/devin.md` — Devin CLI source (ATIF transcripts + `sessions.db`, token mapping, cost).
 - `docs/knowledge/pi.md` — pi coding agent source (session JSONL, four usage entry types, fork dedup).
 - `docs/knowledge/fx.md` — fx (Vercel Labs) source (`~/.fx/usage.jsonl` ledger, billable `generation` facts only).
-- `docs/knowledge/pending-sources.md` — researched but unimplemented (Command Code: token schema unverified) and already covered (grokbot = `cursor-grok-bot`).
+- `docs/knowledge/command-code.md` — Command Code source (session JSONL, non-cached `inputTokens`, fork/clone dedup).
+- `docs/knowledge/pending-sources.md` — already-covered sources (grokbot = `cursor-grok-bot`) and how to unblock a docs-only CLI schema from its npm tarball.
 - `docs/schema.sql` — single-table ClickHouse schema.
 - `docs/migrate_add_source.sql` — migration adding `source`.
 - `docs/queries.sql` — common query snippets.

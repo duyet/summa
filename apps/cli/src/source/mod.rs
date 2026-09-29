@@ -1,4 +1,5 @@
 pub mod ccusage;
+pub mod command_code;
 pub mod companion;
 pub mod antigravity;
 pub mod cursor;
