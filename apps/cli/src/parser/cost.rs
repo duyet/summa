@@ -27,7 +27,12 @@ pub fn distribute_cost(breakdowns: &mut [BreakdownForCost], parent_cost: f64) {
 
     let total_output: u64 = breakdowns.iter().map(|b| b.output_tokens).sum();
     let total_input: u64 = breakdowns.iter().map(|b| b.input_tokens).sum();
-    let weight = if total_output > 0 {
+    // One basis for the whole distribution. Picking per-row would compare
+    // different units mid-loop: a row with no output would fall back to its
+    // input tokens while the total stays on output tokens, taking a share
+    // larger than the parent cost and pushing the last row negative.
+    let use_output = total_output > 0;
+    let weight = if use_output {
         total_output as f64
     } else {
         total_input as f64
@@ -47,7 +52,11 @@ pub fn distribute_cost(breakdowns: &mut [BreakdownForCost], parent_cost: f64) {
             // Last entry absorbs remainder to avoid rounding drift.
             bd.cost = round8(remaining);
         } else {
-            let w = if bd.output_tokens > 0 { bd.output_tokens } else { bd.input_tokens } as f64;
+            let w = if use_output {
+                bd.output_tokens
+            } else {
+                bd.input_tokens
+            } as f64;
             let share = parent_cost * (w / weight);
             bd.cost = round8(share);
             remaining -= bd.cost;
@@ -106,6 +115,34 @@ mod tests {
         distribute_cost(&mut bds_arr, 5.0);
         assert_eq!(bds_arr[0].cost, 5.0);
         assert_eq!(bds_arr[1].cost, 0.0);
+    }
+
+    #[test]
+    fn mixed_zero_output_row_does_not_inflate_its_share_or_go_negative() {
+        // A model that consumed input but produced no output (cache warming, a
+        // turn cut off before the reply) has output_tokens == 0. The total
+        // weight is the sum of *output* tokens, so counting that row's input
+        // tokens as its weight compares different units: it takes a share
+        // larger than the whole parent cost, and the last row — which absorbs
+        // the remainder — goes negative. Negative cost rows then flow into
+        // daily rollups and cancel real spend.
+        let mut bds_arr = bds(&[0.0, 0.0], &[0, 100], &[1000, 1000]);
+        distribute_cost(&mut bds_arr, 1.0);
+        for (i, b) in bds_arr.iter().enumerate() {
+            assert!(b.cost >= 0.0, "row {i} has negative cost {}", b.cost);
+        }
+        let sum: f64 = bds_arr.iter().map(|b| b.cost).sum();
+        assert!((sum - 1.0).abs() < 1e-8, "sum was {sum}");
+    }
+
+    #[test]
+    fn single_weight_basis_is_used_for_every_row() {
+        // With a shared output basis, a zero-output row earns a zero share
+        // rather than silently switching units mid-distribution.
+        let mut bds_arr = bds(&[0.0, 0.0], &[0, 100], &[1000, 1000]);
+        distribute_cost(&mut bds_arr, 1.0);
+        assert!((bds_arr[0].cost - 0.0).abs() < 1e-8, "got {}", bds_arr[0].cost);
+        assert!((bds_arr[1].cost - 1.0).abs() < 1e-8, "got {}", bds_arr[1].cost);
     }
 
     #[test]

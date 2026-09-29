@@ -1161,6 +1161,27 @@ mod tests {
     }
 
     #[test]
+    fn repeated_account_imports_produce_identical_dedup_keys() {
+        // The anti-double-count invariant for account-wide sources: two hosts
+        // importing the same Cursor account must land on the same dedup_key, so
+        // ReplacingMergeTree collapses them. Asserting only that the hostname
+        // variant *differs* (below) does not prove this — it is the identity
+        // across machines that stops double counting.
+        let a = map_cursor_events_json(FIXTURE, "imp-a", None, None, "2026-08-19 00:00:00").unwrap();
+        let b = map_cursor_events_json(FIXTURE, "imp-b", None, None, "2026-08-19 00:00:00").unwrap();
+        assert_eq!(a.len(), b.len());
+        let keys_a: std::collections::HashSet<_> = a.iter().map(|r| r.dedup_key.clone()).collect();
+        let keys_b: std::collections::HashSet<_> = b.iter().map(|r| r.dedup_key.clone()).collect();
+        assert!(
+            keys_a == keys_b,
+            "account-wide rows must not be host-scoped or the same event is counted twice"
+        );
+        // import_id legitimately differs per run; only identity must match.
+        assert!(a.iter().all(|r| r.import_id == "imp-a"));
+        assert!(b.iter().all(|r| r.import_id == "imp-b"));
+    }
+
+    #[test]
     fn account_identity_ignores_importer_hostname() {
         let rows = map_cursor_events_json(FIXTURE, "imp", None, None, "2026-08-19 00:00:00").unwrap();
         assert!(rows.iter().all(|r| r.machine_name == "account"));
