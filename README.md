@@ -1,8 +1,8 @@
 # summa
 
 **summa** (*Latin*: sum, total, summary) — lightweight CLI that imports Claude
-Code (**ccusage**), Codex, OpenCode, Cursor, Grok, and other agent usage into local
-DuckDB, optionally syncing to ClickHouse or MotherDuck.
+Code (**ccusage**), Codex, OpenCode, Cursor, Grok, Devin, pi, fx, and other agent
+usage into local DuckDB, optionally syncing to ClickHouse or MotherDuck.
 
 | | |
 |---|---|
@@ -116,6 +116,8 @@ summa import --days-back=7
 summa import --skip-clickhouse
 summa import --skip-cursor
 summa import --skip-grok
+summa import --skip-pi
+summa import --skip-fx
 cargo run -- backfill-duckdb
 ```
 
