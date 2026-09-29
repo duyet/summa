@@ -24,15 +24,7 @@ const FREE: ModelRates = ModelRates {
     output: 0.0,
 };
 
-/// Gemini 3.5 Flash (Google AI Studio / Vertex-ish list prices, 2026).
-const GEMINI_35_FLASH: ModelRates = ModelRates {
-    input: 1.50,
-    cache_read: 0.15,
-    cache_write: 1.50,
-    output: 9.00,
-};
-
-/// Gemini 3 Flash family.
+/// Gemini 3 Flash Preview.
 const GEMINI_3_FLASH: ModelRates = ModelRates {
     input: 0.50,
     cache_read: 0.05,
@@ -40,7 +32,40 @@ const GEMINI_3_FLASH: ModelRates = ModelRates {
     output: 3.00,
 };
 
-/// Gemini 2.5 Flash (legacy).
+/// Gemini 3.6 / 3.7 / 3.8 Flash. Introductory rates through 2026-12-31, then
+/// $1.50 / $7.50 / $0.15 from 2027-01-01. Rates here are the current ones.
+const GEMINI_36_FLASH: ModelRates = ModelRates {
+    input: 0.75,
+    cache_read: 0.075,
+    cache_write: 0.75,
+    output: 3.75,
+};
+
+/// Gemini 3.5 Flash.
+const GEMINI_35_FLASH: ModelRates = ModelRates {
+    input: 1.50,
+    cache_read: 0.15,
+    cache_write: 1.50,
+    output: 9.00,
+};
+
+/// Gemini 3.5 Flash-Lite.
+const GEMINI_35_FLASH_LITE: ModelRates = ModelRates {
+    input: 0.30,
+    cache_read: 0.03,
+    cache_write: 0.30,
+    output: 2.50,
+};
+
+/// Gemini 3.1 Flash-Lite.
+const GEMINI_31_FLASH_LITE: ModelRates = ModelRates {
+    input: 0.25,
+    cache_read: 0.025,
+    cache_write: 0.25,
+    output: 1.50,
+};
+
+/// Gemini 2.5 Flash.
 const GEMINI_25_FLASH: ModelRates = ModelRates {
     input: 0.30,
     cache_read: 0.03,
@@ -48,24 +73,75 @@ const GEMINI_25_FLASH: ModelRates = ModelRates {
     output: 2.50,
 };
 
-/// Claude Sonnet 4.x (Anthropic list, cache write ≈ 1.25× input).
-const CLAUDE_SONNET: ModelRates = ModelRates {
+/// Gemini 2.5 Pro (≤200k prompt).
+const GEMINI_25_PRO: ModelRates = ModelRates {
+    input: 1.25,
+    cache_read: 0.125,
+    cache_write: 1.25,
+    output: 10.00,
+};
+
+/// Gemini 3.1 Pro Preview (≤200k prompt).
+const GEMINI_31_PRO: ModelRates = ModelRates {
+    input: 2.00,
+    cache_read: 0.20,
+    cache_write: 2.00,
+    output: 12.00,
+};
+
+/// Claude Sonnet 4.x (Anthropic list, cache write = 1.25× input).
+const CLAUDE_SONNET_4: ModelRates = ModelRates {
     input: 3.00,
     cache_read: 0.30,
     cache_write: 3.75,
     output: 15.00,
 };
 
-/// Claude Opus 4.x.
-const CLAUDE_OPUS: ModelRates = ModelRates {
+/// Claude Sonnet 5 / 5.5. The $2/$10 launch price became standard price; the
+/// scheduled September 2026 increase to $3/$15 did not happen.
+const CLAUDE_SONNET_5: ModelRates = ModelRates {
+    input: 2.00,
+    cache_read: 0.20,
+    cache_write: 2.50,
+    output: 10.00,
+};
+
+/// Claude Opus 4.1 / 4 (retired on the first-party API, still live on Bedrock
+/// and Google Cloud).
+const CLAUDE_OPUS_4: ModelRates = ModelRates {
     input: 15.00,
     cache_read: 1.50,
     cache_write: 18.75,
     output: 75.00,
 };
 
-/// Claude Haiku.
-const CLAUDE_HAIKU: ModelRates = ModelRates {
+/// Claude Opus 4.5 through 4.8. Opus 4.1 kept the older $15/$75 rates, so the
+/// split is by minor version and not by family name.
+const CLAUDE_OPUS_4_5: ModelRates = ModelRates {
+    input: 5.00,
+    cache_read: 0.50,
+    cache_write: 6.25,
+    output: 25.00,
+};
+
+/// Claude Opus 5 / 5.5.
+const CLAUDE_OPUS_5: ModelRates = ModelRates {
+    input: 5.00,
+    cache_read: 0.50,
+    cache_write: 6.25,
+    output: 25.00,
+};
+
+/// Claude Haiku 4.5.
+const CLAUDE_HAIKU_4_5: ModelRates = ModelRates {
+    input: 1.00,
+    cache_read: 0.10,
+    cache_write: 1.25,
+    output: 5.00,
+};
+
+/// Claude Haiku 3.5.
+const CLAUDE_HAIKU_3_5: ModelRates = ModelRates {
     input: 0.80,
     cache_read: 0.08,
     cache_write: 1.00,
@@ -87,7 +163,102 @@ fn normalize(model: &str) -> String {
     model.to_ascii_lowercase().replace('_', "-").replace(' ', "-")
 }
 
+/// Parse the `(major, minor)` version out of a model id containing `family`.
+///
+/// Handles `claude-opus-4-5-20260101` (4.5), `claude-opus-4.1` (4.1), `opus-5`
+/// (5.0), and display names like `Claude Opus 5 (Thinking)`. Returns `None`
+/// when the id carries no version, which leaves the caller on its default.
+fn version(normalized: &str, family: &str) -> Option<(u32, u32)> {
+    let after = normalized.split_once(family)?.1;
+    let start = after.find(|c: char| c.is_ascii_digit())?;
+    let digits: String = after[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    // A long trailing number is a release date, not a version: the tail of
+    // "3-5-haiku-20241022" is 20241022. Only short groups can be versions.
+    if digits.is_empty() || digits.len() > 2 {
+        return None;
+    }
+    let major: u32 = digits.parse().ok()?;
+    let rest = &after[start + digits.len()..];
+    for sep in ['.', '-'] {
+        if let Some(tail) = rest.strip_prefix(sep) {
+            let minor: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+            // "4-5-20260101" is 4.5, not 4.20260101.
+            if !minor.is_empty() && minor.len() <= 2 {
+                if let Ok(m) = minor.parse::<u32>() {
+                    return Some((major, m));
+                }
+            }
+        }
+    }
+    Some((major, 0))
+}
+
 /// Map a free-form model id / display name to public rates.
+/// Which Gemini price tier a model id names.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum GeminiTier {
+    Flash,
+    FlashLite,
+    Pro,
+}
+
+/// Read the version and class out of a Gemini model id.
+///
+/// Gemini spells versions with dots (`gemini-3.5-flash`) or hyphens
+/// (`gemini-2-5-pro`), so this scans for the first short number group rather
+/// than reusing the family-anchored `version` helper.
+fn gemini_tier(m: &str) -> Option<(GeminiTier, u32, u32)> {
+    let bytes = m.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        // A long group is a release date, not a version.
+        if i - start > 2 {
+            continue;
+        }
+        let major: u32 = m[start..i].parse().ok()?;
+        let mut minor = 0u32;
+        let sep = if i < bytes.len() && (bytes[i] == b'.' || bytes[i] == b'-') {
+            Some(bytes[i])
+        } else {
+            None
+        };
+        if let Some(sep) = sep {
+            let ns = i + 1;
+            let mut j = ns;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > ns && j - ns <= 2 {
+                minor = m[ns..j].parse().ok()?;
+                i = j;
+            } else {
+                // A separator followed by more than two digits is a date.
+                let _ = sep;
+            }
+        }
+        let tier = if m.contains("pro") {
+            GeminiTier::Pro
+        } else if m.contains("lite") {
+            GeminiTier::FlashLite
+        } else {
+            GeminiTier::Flash
+        };
+        return Some((tier, major, minor));
+    }
+    None
+}
+
 pub fn rates_for_model(model: &str) -> ModelRates {
     let m = normalize(model);
 
@@ -100,36 +271,52 @@ pub fn rates_for_model(model: &str) -> ModelRates {
         return FREE;
     }
 
-    // Anthropic
+    // Anthropic. Rates moved twice: Opus 4.1 was $15/$75, Opus 4.5 dropped to
+    // $5/$25, and Sonnet 5 dropped to $2/$10. Family name alone is ambiguous.
     if m.contains("opus") {
-        return CLAUDE_OPUS;
+        return match version(&m, "opus") {
+            Some((4, minor)) if minor <= 1 => CLAUDE_OPUS_4,
+            _ => CLAUDE_OPUS_5,
+        };
     }
     if m.contains("sonnet") {
-        return CLAUDE_SONNET;
+        return match version(&m, "sonnet") {
+            Some((major, _)) if major >= 5 => CLAUDE_SONNET_5,
+            _ => CLAUDE_SONNET_4,
+        };
     }
     if m.contains("haiku") {
-        return CLAUDE_HAIKU;
+        return match version(&m, "haiku") {
+            Some((major, _)) if major >= 4 => CLAUDE_HAIKU_4_5,
+            _ => CLAUDE_HAIKU_3_5,
+        };
     }
     if m.contains("claude") {
-        // bare "claude" → sonnet-class default
-        return CLAUDE_SONNET;
+        // bare "claude" → current sonnet-class default
+        return CLAUDE_SONNET_5;
     }
 
-    // Google Gemini
-    if m.contains("3.5-flash") || m.contains("3-5-flash") || m.contains("gemini-3.5") {
-        return GEMINI_35_FLASH;
-    }
-    if m.contains("3.6-flash") || m.contains("3-6-flash") {
-        return GEMINI_35_FLASH; // price like 3.5 until published
-    }
-    if m.contains("3-flash") || m.contains("gemini-3-flash") || m.contains("gemini-default") {
-        return GEMINI_3_FLASH;
-    }
-    if m.contains("2.5-flash") || m.contains("2-5-flash") {
-        return GEMINI_25_FLASH;
-    }
+    // Google Gemini. Pro and Lite are separate price tiers from Flash, and
+    // 3.6/3.7/3.8 Flash are cheaper than 3.5, so the family name is not enough.
     if m.contains("gemini") || m.contains("flash") {
-        return GEMINI_3_FLASH;
+        return match gemini_tier(&m) {
+            Some((GeminiTier::Pro, major, _)) => {
+                if major >= 3 {
+                    GEMINI_31_PRO
+                } else {
+                    GEMINI_25_PRO
+                }
+            }
+            Some((GeminiTier::FlashLite, 3, minor)) if minor >= 5 => GEMINI_35_FLASH_LITE,
+            Some((GeminiTier::FlashLite, _, _)) => GEMINI_31_FLASH_LITE,
+            // Within 3.x the rate fell at 3.6: 3.5 is $1.50/$9.00, 3.6+ is
+            // $0.75/$3.75. 2.x stays on the 2.5 Flash rate.
+            Some((GeminiTier::Flash, 3, minor)) if minor >= 6 => GEMINI_36_FLASH,
+            Some((GeminiTier::Flash, 3, minor)) if minor >= 1 => GEMINI_35_FLASH,
+            Some((GeminiTier::Flash, 3, _)) => GEMINI_3_FLASH,
+            Some((GeminiTier::Flash, _, _)) => GEMINI_25_FLASH,
+            None => GEMINI_36_FLASH,
+        };
     }
 
     // Z.AI / GLM
@@ -238,9 +425,146 @@ mod tests {
     }
 
     #[test]
+    fn gemini_36_and_newer_flash_is_cheaper_than_35() {
+        // 3.6/3.7/3.8 Flash launched at $0.75/$3.75, below 3.5's $1.50/$9.00.
+        for id in ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"] {
+            let r = rates_for_model(id);
+            assert!((r.input - 0.75).abs() < 1e-9, "{id} input");
+            assert!((r.output - 3.75).abs() < 1e-9, "{id} output");
+            assert!((r.cache_read - 0.075).abs() < 1e-9, "{id} cache read");
+        }
+    }
+
+    #[test]
+    fn gemini_pro_is_priced_above_flash() {
+        // Pro was previously falling through to the Flash default, understating
+        // cost by roughly 4x on output.
+        let p31 = rates_for_model("gemini-3.1-pro-preview");
+        assert!((p31.input - 2.00).abs() < 1e-9);
+        assert!((p31.output - 12.00).abs() < 1e-9);
+
+        let p25 = rates_for_model("gemini-2.5-pro");
+        assert!((p25.input - 1.25).abs() < 1e-9);
+        assert!((p25.output - 10.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gemini_flash_lite_is_its_own_tier() {
+        let l35 = rates_for_model("gemini-3.5-flash-lite");
+        assert!((l35.input - 0.30).abs() < 1e-9);
+        assert!((l35.output - 2.50).abs() < 1e-9);
+
+        let l31 = rates_for_model("gemini-3.1-flash-lite");
+        assert!((l31.input - 0.25).abs() < 1e-9);
+        assert!((l31.output - 1.50).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gemini_2_5_flash_unchanged() {
+        let r = rates_for_model("gemini-2.5-flash");
+        assert!((r.input - 0.30).abs() < 1e-9);
+        assert!((r.output - 2.50).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gemini_tier_ignores_trailing_release_dates() {
+        assert_eq!(
+            gemini_tier(&normalize("gemini-2.5-flash-001")),
+            Some((GeminiTier::Flash, 2, 5))
+        );
+        assert_eq!(
+            gemini_tier(&normalize("gemini-3-5-pro-preview")),
+            Some((GeminiTier::Pro, 3, 5))
+        );
+        assert_eq!(gemini_tier(&normalize("flash")), None);
+    }
+
+    #[test]
     fn claude_opus_display_name() {
+        // Opus 4.6 is $5/$25, not the $15/$75 of Opus 4.1.
         let r = rates_for_model("Claude Opus 4.6 (Thinking)");
-        assert!((r.input - 15.00).abs() < 1e-9);
+        assert!((r.input - 5.00).abs() < 1e-9);
+        assert!((r.output - 25.00).abs() < 1e-9);
+        assert!((r.cache_read - 0.50).abs() < 1e-9);
+    }
+
+    #[test]
+    fn claude_opus_4_1_keeps_the_retired_expensive_rates() {
+        // Opus 4.1 and Opus 4 are still sold on Bedrock and Google Cloud.
+        for id in ["claude-opus-4-1", "claude-opus-4.1", "claude-opus-4-20250514"] {
+            let r = rates_for_model(id);
+            assert!((r.input - 15.00).abs() < 1e-9, "{id} should be $15/MTok");
+            assert!((r.output - 75.00).abs() < 1e-9, "{id} should be $75/MTok");
+        }
+    }
+
+    #[test]
+    fn claude_opus_4_5_and_5_share_the_lower_rates() {
+        for id in [
+            "claude-opus-4-5-20260101",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-opus-5-5",
+        ] {
+            let r = rates_for_model(id);
+            assert!((r.input - 5.00).abs() < 1e-9, "{id} should be $5/MTok");
+            assert!((r.output - 25.00).abs() < 1e-9, "{id} should be $25/MTok");
+        }
+    }
+
+    #[test]
+    fn claude_sonnet_5_is_cheaper_than_sonnet_4() {
+        // The $2/$10 launch rate became standard; the scheduled increase to
+        // $3/$15 on 2026-09-01 did not happen.
+        let s5 = rates_for_model("claude-sonnet-5");
+        assert!((s5.input - 2.00).abs() < 1e-9);
+        assert!((s5.output - 10.00).abs() < 1e-9);
+        assert!((s5.cache_read - 0.20).abs() < 1e-9);
+        let s55 = rates_for_model("claude-sonnet-5-5");
+        assert!((s55.input - 2.00).abs() < 1e-9);
+
+        let s4 = rates_for_model("claude-sonnet-4-5-20250929");
+        assert!((s4.input - 3.00).abs() < 1e-9);
+        assert!((s4.output - 15.00).abs() < 1e-9);
+        let s46 = rates_for_model("claude-sonnet-4-6");
+        assert!((s46.input - 3.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn claude_haiku_4_5_is_more_expensive_than_3_5() {
+        let h45 = rates_for_model("claude-haiku-4-5");
+        assert!((h45.input - 1.00).abs() < 1e-9);
+        assert!((h45.output - 5.00).abs() < 1e-9);
+        assert!((h45.cache_read - 0.10).abs() < 1e-9);
+
+        let h35 = rates_for_model("claude-3-5-haiku-20241022");
+        assert!((h35.input - 0.80).abs() < 1e-9);
+        assert!((h35.output - 4.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn unversioned_claude_falls_to_current_sonnet() {
+        let r = rates_for_model("claude");
+        assert!((r.input - 2.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn version_reads_dotted_hyphenated_and_dated_ids() {
+        // Dotted and hyphenated spellings agree.
+        assert_eq!(version(&normalize("claude-opus-4.1"), "opus"), Some((4, 1)));
+        assert_eq!(version(&normalize("claude-opus-4-1"), "opus"), Some((4, 1)));
+        // A trailing date must not be read as the minor version.
+        assert_eq!(version(&normalize("claude-opus-4-5-20260101"), "opus"), Some((4, 5)));
+        assert_eq!(version(&normalize("claude-sonnet-4-5-20250929"), "sonnet"), Some((4, 5)));
+        assert_eq!(version(&normalize("claude-opus-5-20260101"), "opus"), Some((5, 0)));
+        // A major with no minor.
+        assert_eq!(version(&normalize("claude-sonnet-5"), "sonnet"), Some((5, 0)));
+        assert_eq!(version(&normalize("claude-opus-4-20250514"), "opus"), Some((4, 0)));
+        // Only a date, so no version at all.
+        assert_eq!(version(&normalize("claude-3-5-haiku-20241022"), "haiku"), None);
+        assert_eq!(version(&normalize("claude-opus"), "opus"), None);
     }
 
     #[test]
