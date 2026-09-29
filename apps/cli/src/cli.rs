@@ -148,6 +148,9 @@ pub struct ImportArgs {
     /// Skip Cursor account-wide usage source
     #[arg(long)]
     pub skip_cursor: bool,
+    /// Skip Command Code source
+    #[arg(long)]
+    pub skip_command_code: bool,
     /// Skip Pi coding agent source
     #[arg(long)]
     pub skip_pi: bool,
@@ -229,6 +232,7 @@ mod tests {
             skip_grok: false,
             skip_devin: false,
             skip_cursor: false,
+            skip_command_code: false,
             skip_pi: false,
             skip_fx: false,
             skip_clickhouse: false,
