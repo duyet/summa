@@ -5,16 +5,24 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>summa — AI coding-agent usage, one table</title>
   <meta name="description" content="CLI that imports AI coding-agent usage into DuckDB and ClickHouse.">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0c0c0b">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c0c0b'/%3E%3Ctext x='16' y='23' font-family='ui-monospace,Menlo,monospace' font-size='20' font-weight='600' fill='%23c8e07a' text-anchor='middle'%3E%24%3C/text%3E%3C/svg%3E">
   <style>
     :root {
       --bg: #0c0c0b;
       --fg: #ecece8;
-      --muted: #8d8d86;
-      --dim: #5e5e58;
+      --muted: #a3a39b;
+      --dim: #8a8a83;
       --line: #262622;
-      --term: #121211;
-      --term-edge: #2c2c28;
+      --line-2: #33332e;
+      --surface: #121211;
+      --surface-2: #171715;
       --accent: #c8e07a;
+      --danger: #e07a7a;
+      --r-card: 12px;
+      --r-ctl: 6px;
+      --ease: cubic-bezier(0.2, 0, 0, 1);
     }
     * { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -23,104 +31,233 @@
       font: 14.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
       -webkit-font-smoothing: antialiased;
       min-height: 100dvh;
+      overflow-wrap: break-word;
     }
     a { color: var(--fg); text-decoration: none; }
-    a:hover { color: var(--accent); }
-    .wrap {
-      max-width: 760px;
-      margin: 0 auto;
-      padding: 28px 24px 72px;
+    h1, h2 { text-wrap: balance; }
+    p { text-wrap: pretty; }
+
+    /* Focus is a single consistent ring everywhere, keyboard-only so mouse
+       users never see it. */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 3px;
     }
-    nav {
+    .skip {
+      position: absolute;
+      left: 12px;
+      top: -60px;
+      z-index: 20;
+      padding: 10px 14px;
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      background: var(--fg);
+      color: var(--bg);
+      border-radius: var(--r-ctl);
+      font-size: 13px;
+      transition: top 160ms var(--ease);
+    }
+    .skip:focus { top: 12px; }
+
+    .wrap {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 0 24px 72px;
+    }
+    /* Same measure as .wrap, but no bottom padding — the sticky bar is a bar,
+       not a page section. Reusing .wrap here leaked its 72px into the nav. */
+    .wrap-bar {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 0 24px;
+      width: 100%;
+    }
+
+    /* Sticky primary nav: blur + hairline only after the page scrolls, so the
+       hero starts clean. */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--bg);
+      background: color-mix(in srgb, var(--bg) 72%, transparent);
+      backdrop-filter: saturate(140%) blur(12px);
+      border-bottom: 1px solid transparent;
+      transition: border-color 200ms var(--ease);
+    }
+    .topbar[data-stuck="true"] { border-bottom-color: var(--line); }
+    .topbar-in {
       display: flex;
-      align-items: baseline;
-      gap: 22px;
-      height: 40px;
-      margin-bottom: 56px;
+      align-items: center;
+      gap: 20px;
+      min-height: 52px;
       font-size: 13px;
     }
-    nav .brand { font-weight: 600; letter-spacing: 0.02em; }
-    nav .brand span { color: var(--accent); margin-right: 8px; }
-    nav a { color: var(--muted); }
-    nav a:hover { color: var(--fg); }
-    nav .spacer { flex: 1; }
-    nav .user { color: var(--dim); max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .brand { font-weight: 600; letter-spacing: 0.02em; }
+    .brand span { color: var(--accent); margin-right: 8px; }
+    .brand:hover { color: var(--fg); }
+    .links { display: flex; align-items: center; gap: 20px; }
+    .links a { color: var(--muted); }
+    .links a:hover { color: var(--fg); }
+    .spacer { flex: 1; }
+    .user {
+      color: var(--dim);
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .user::before {
+      content: "";
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-right: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      vertical-align: 1px;
+    }
+
+    /* Buttons ------------------------------------------------------------- */
+    .btn {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 40px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: var(--r-ctl);
+      background: var(--fg);
+      color: var(--bg);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: opacity 140ms var(--ease), transform 140ms var(--ease);
+    }
+    .btn:hover { opacity: 0.86; }
+    .btn:active { transform: scale(0.96); }
+    .btn[disabled] { opacity: 0.5; cursor: progress; }
+    .btn.ghost {
+      background: transparent;
+      color: var(--accent);
+      box-shadow: inset 0 0 0 1px var(--line-2);
+    }
+    .btn.ghost:hover { box-shadow: inset 0 0 0 1px var(--accent); }
+    .btn.ghost[disabled] { cursor: default; opacity: 0.45; }
+
+    /* Copy button: text and tick cross-fade in place, no layout shift.
+       min-height lives here, not on .btn, so the secret block's copy control
+       (built in JS with class="copy" only) still gets a 40px target. */
+    .copy {
+      flex: 0 0 auto;
+      position: relative;
+      min-height: 40px;
+      background: transparent;
+      color: var(--dim);
+      font-size: 12px;
+      padding: 0 8px;
+    }
+    .copy:hover { color: var(--fg); }
+    .copy .lbl, .copy .tick { grid-area: 1 / 1; }
+    .copy {
+      display: inline-grid;
+      place-items: center;
+    }
+    .copy .tick {
+      color: var(--accent);
+      opacity: 0;
+      transform: scale(0.25);
+      filter: blur(4px);
+      transition: opacity 220ms var(--ease), transform 220ms var(--ease), filter 220ms var(--ease);
+      pointer-events: none;
+    }
+    .copy .lbl {
+      transition: opacity 160ms var(--ease), transform 160ms var(--ease), filter 160ms var(--ease);
+    }
+    .copy[data-state="done"] .lbl { opacity: 0; transform: scale(0.25); filter: blur(4px); }
+    .copy[data-state="done"] .tick { opacity: 1; transform: scale(1); filter: blur(0); }
+
+    /* Hero --------------------------------------------------------------- */
+    .hero { padding: 56px 0 0; }
     h1 {
-      font-size: clamp(26px, 6vw, 40px);
-      line-height: 1.15;
+      font-size: clamp(26px, 6vw, 42px);
+      line-height: 1.12;
       margin: 0 0 16px;
       font-weight: 600;
-      letter-spacing: -0.01em;
+      letter-spacing: -0.015em;
     }
     h1 em { font-style: normal; color: var(--accent); }
     .tag {
       color: var(--muted);
-      margin: 0 0 18px;
+      margin: 0 0 28px;
       font-size: 15px;
-      max-width: 58ch;
+      max-width: 60ch;
     }
-    .install {
+    .snip {
       display: flex;
       align-items: center;
       gap: 12px;
-      flex-wrap: wrap;
-      margin: 0 0 14px;
+      max-width: 100%;
+      padding: 4px 4px 4px 12px;
+      background: var(--surface);
+      border-radius: var(--r-card);
+      box-shadow: inset 0 0 0 1px var(--line-2);
     }
-    .install code {
+    .snip code {
       font: inherit;
       color: var(--fg);
+      min-width: 0;
+      overflow-wrap: anywhere;
     }
-    .install .prompt { color: var(--accent); margin-right: 8px; user-select: none; }
-    .copy {
-      appearance: none;
-      border: 0;
-      background: transparent;
-      color: var(--dim);
-      font: inherit;
-      font-size: 12px;
-      cursor: pointer;
-      min-height: 40px;
-      padding: 0 8px;
-    }
-    .copy:hover { color: var(--fg); }
-    .copy:active { transform: scale(0.96); }
-    .copy.ok { color: var(--accent); }
+    .snip .prompt { color: var(--accent); margin-right: 8px; user-select: none; }
     .meta {
       color: var(--dim);
       font-size: 12.5px;
-      margin: 0 0 36px;
+      margin: 14px 0 36px;
     }
-    .meta a { color: var(--dim); text-decoration: underline; text-underline-offset: 3px; }
+    .meta code { color: var(--muted); }
+
+    /* Terminal preview ---------------------------------------------------- */
     .term {
-      background: var(--term);
-      border: 1px solid var(--term-edge);
-      border-radius: 12px;
+      background: var(--surface);
+      border-radius: var(--r-card);
+      box-shadow: 0 0 0 1px #00000014, 0 1px 0 0 #ffffff08 inset, 0 24px 60px #00000066;
       overflow: hidden;
-      box-shadow: 0 0 0 1px #00000014, 0 24px 60px #00000066;
       margin: 0 0 40px;
     }
     .term-bar {
       display: flex;
       align-items: center;
-      height: 36px;
-      padding: 0 12px;
-      border-bottom: 1px solid var(--term-edge);
+      gap: 12px;
+      min-height: 40px;
+      padding: 0 8px 0 12px;
+      border-bottom: 1px solid #1c1c19;
       color: var(--dim);
       font-size: 12px;
     }
-    .dots { display: flex; gap: 6px; width: 52px; }
-    .dots i {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: #5a5a54; display: block;
-    }
     .term-bar .title { flex: 1; text-align: center; }
+    .dots { display: flex; gap: 6px; }
+    .dots i {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #5a5a54;
+      display: block;
+    }
     .term-body {
       padding: 16px 18px 14px;
-      min-height: 220px;
       color: #cfcfc8;
       font-size: 13px;
       line-height: 1.6;
+      font-variant-numeric: tabular-nums;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
     }
+    .term-body > div { white-space: pre; }
     .term-body .hi { color: var(--fg); }
     .term-body .ok { color: var(--accent); }
     .term-body .muted { color: var(--dim); }
@@ -132,109 +269,148 @@
       vertical-align: -1px;
       margin-left: 2px;
     }
-    @media (prefers-reduced-motion: no-preference) {
-      .cursor { animation: blink 1.15s step-end infinite; }
-    }
-    @keyframes blink { 50% { opacity: 0; } }
     .term-foot {
       display: flex;
       justify-content: space-between;
-      padding: 8px 18px 12px;
+      gap: 12px;
+      padding: 9px 18px 11px;
       color: var(--dim);
       font-size: 11.5px;
       border-top: 1px solid #1c1c19;
     }
-    .prose {
-      color: var(--muted);
-      max-width: 62ch;
-      font-size: 14px;
-      line-height: 1.65;
-    }
+
+    .prose { color: var(--muted); max-width: 64ch; font-size: 14px; line-height: 1.65; }
     .prose p { margin: 0 0 14px; }
+    .prose code, .grid code { color: var(--fg); }
     .rule {
-      color: var(--dim);
+      color: var(--line-2);
       letter-spacing: 0.4em;
-      margin: 36px 0;
+      margin: 40px 0;
       font-size: 11px;
+      user-select: none;
     }
+
+    /* Feature grid ------------------------------------------------------- */
     .grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 28px 32px;
+      gap: 16px;
     }
-    .grid h2 {
-      margin: 0 0 6px;
+    .card {
+      padding: 18px 18px 20px;
+      background: var(--surface);
+      border-radius: var(--r-card);
+      box-shadow: inset 0 0 0 1px var(--line);
+      transition: box-shadow 200ms var(--ease), transform 200ms var(--ease);
+    }
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow: inset 0 0 0 1px var(--line-2), 0 12px 28px #00000055;
+    }
+    .card h2 {
+      margin: 0 0 7px;
       font-size: 13.5px;
       font-weight: 600;
       color: var(--fg);
     }
-    .grid p {
-      margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.55;
-    }
+    .card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+    section[id] { scroll-margin-top: 68px; }
+
+    /* Keys ---------------------------------------------------------------- */
     .keys {
-      margin-top: 40px;
-      padding-top: 24px;
+      margin-top: 44px;
+      padding-top: 28px;
       border-top: 1px solid var(--line);
     }
-    .keys label {
-      display: block;
-      color: var(--dim);
-      font-size: 12px;
-      margin-bottom: 8px;
+    .keys > h2 {
+      margin: 0 0 6px;
+      font-size: 15px;
+      font-weight: 600;
     }
-    .row {
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
+    .keys .sub {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 13px;
+      max-width: 62ch;
     }
-    .row input {
-      flex: 1;
+    .keys .sub code { color: var(--fg); }
+    .field { display: flex; gap: 8px; flex-wrap: wrap; }
+    .field input {
+      flex: 1 1 200px;
       min-width: 180px;
-      background: var(--term);
-      border: 1px solid var(--term-edge);
-      border-radius: 6px;
+      min-height: 40px;
+      background: var(--surface);
+      border: 0;
+      border-radius: var(--r-ctl);
+      box-shadow: inset 0 0 0 1px var(--line-2);
       color: var(--fg);
       font: inherit;
       font-size: 13px;
-      padding: 10px 12px;
-      min-height: 40px;
+      padding: 0 12px;
     }
-    .row input:focus {
-      outline: 1px solid var(--accent);
-      outline-offset: 0;
+    .field input::placeholder { color: var(--dim); }
+    .field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+    .secret {
+      margin-top: 16px;
+      padding: 14px 8px 14px 14px;
+      background: var(--surface-2);
+      border-radius: var(--r-card);
+      box-shadow: inset 0 0 0 1px var(--line-2);
     }
-    .row button {
-      appearance: none;
-      background: var(--fg);
-      color: var(--bg);
-      border: 0;
-      border-radius: 6px;
+    .secret .cap {
+      display: block;
+      color: var(--accent);
+      font-size: 11.5px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .secret pre {
+      margin: 0;
       font: inherit;
-      font-size: 13px;
-      padding: 0 14px;
-      min-height: 40px;
-      cursor: pointer;
-    }
-    .row button:active { transform: scale(0.96); }
-    .row button.signin {
-      background: transparent;
-      color: var(--accent);
-      border: 1px solid var(--term-edge);
-    }
-    .row button.signin:hover { border-color: var(--accent); }
-    .out {
-      margin-top: 12px;
-      color: var(--accent);
       font-size: 12.5px;
+      line-height: 1.6;
+      color: var(--fg);
       white-space: pre-wrap;
-      word-break: break-all;
+      overflow-wrap: anywhere;
     }
-    .out.err { color: #e07a7a; }
-    .out a { text-decoration: underline; text-underline-offset: 3px; }
-    .keys .muted { color: var(--dim); font-size: 12.5px; margin: 10px 0 0; }
+    .secret .row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .secret .row pre { flex: 1; min-width: 0; }
+    .secret .note {
+      margin: 10px 0 0;
+      color: var(--dim);
+      font-size: 12px;
+    }
+
+    .out { margin-top: 12px; font-size: 12.5px; }
+    .out .msg { color: var(--accent); }
+    .out .msg.err { color: var(--danger); }
+    .out .link { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+
+    .keylist { list-style: none; margin: 20px 0 0; padding: 0; display: grid; gap: 8px; }
+    .keylist li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 10px 10px 10px 14px;
+      background: var(--surface);
+      border-radius: var(--r-ctl);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+    .keylist .k-name { color: var(--fg); font-size: 13px; }
+    .keylist .k-pre { color: var(--muted); font-size: 12px; }
+    .keylist .k-when { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .keylist .k-rev { margin-left: auto; }
+    .keylist li[data-revoked="true"] { opacity: 0.55; }
+    .empty { color: var(--dim); font-size: 12.5px; margin: 16px 0 0; }
+
     footer {
       margin-top: 56px;
       color: var(--dim);
@@ -242,136 +418,225 @@
     }
     footer a { color: var(--dim); }
     footer a:hover { color: var(--fg); }
+
+    /* Enter: one short rise, staggered by section. Skipped entirely for
+       reduced-motion users — no fade, no delay, no flash. */
+    @media (prefers-reduced-motion: no-preference) {
+      @keyframes rise {
+        from { opacity: 0; transform: translateY(8px); }
+        to { opacity: 1; transform: none; }
+      }
+      .hero, .snip, .term, .prose, .grid, .keys {
+        animation: rise 520ms var(--ease) both;
+      }
+      .grid { animation-delay: 60ms; }
+      .keys { animation-delay: 120ms; }
+      .cursor { animation: blink 1.15s step-end infinite; }
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
     @media (max-width: 720px) {
-      .wrap { padding: 20px 16px 56px; }
-      nav { gap: 14px; flex-wrap: wrap; height: auto; margin-bottom: 36px; }
-      .grid { grid-template-columns: 1fr; gap: 20px; }
-      .term-body { font-size: 12px; }
+      .wrap { padding: 0 16px 56px; }
+      .wrap-bar { padding: 0 16px; }
+      .topbar-in { flex-wrap: wrap; gap: 12px 16px; padding: 10px 0; }
+      .links { gap: 14px; order: 3; width: 100%; overflow-x: auto; }
+      .hero { padding: 36px 0 0; }
+      .grid { grid-template-columns: 1fr; }
+      .term-body { font-size: 12px; padding: 14px; }
+      .snip { flex-wrap: wrap; }
     }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <nav>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="topbar" id="topbar">
+    <div class="wrap-bar topbar-in">
       <a class="brand" href="/"><span>$</span> summa</a>
-      <a href="#install">install</a>
-      <a href="#channels">channels</a>
-      <a href="#keys">keys</a>
-      <a href="https://burn.duyet.net">analytics</a>
+      <nav class="links" aria-label="Primary">
+        <a href="#install">install</a>
+        <a href="#channels">channels</a>
+        <a href="#keys">keys</a>
+        <a href="https://burn.duyet.net">analytics</a>
+      </nav>
       <span class="spacer"></span>
       <span class="user" id="nav-user" hidden></span>
-      <button class="copy signin-nav" id="signin-nav" type="button" hidden>sign in</button>
-    </nav>
-
-    <h1>AI coding-agent usage,<br>one <em>ccusage_events</em> table.</h1>
-    <p class="tag">summa reads Claude Code, Codex, OpenCode, Cursor, Grok and more on every machine you use, then lands daily, session and per-model rows in local DuckDB — with an optional cloud double-write to ClickHouse + MotherDuck. The result of this project is the live spend dashboard at <a href="https://burn.duyet.net">burn.duyet.net</a>.</p>
-
-    <div class="install" id="install">
-      <code><span class="prompt">$</span> curl -fsSL https://summa.duyet.net/install.sh | bash</code>
-      <button class="copy" type="button" id="copy">copy</button>
+      <button class="btn ghost" id="signin-nav" type="button" hidden>sign in</button>
     </div>
-    <p class="meta">v__VERSION__ · rust cli · channels: <code>beta</code> (master builds) / <code>stable</code> · telemetry hub at summa.duyet.net</p>
+  </header>
 
-    <div class="term" aria-label="summa terminal preview">
-      <div class="term-bar">
-        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span class="title">summa</span>
-        <span style="width:52px"></span>
+  <main id="main">
+    <div class="wrap">
+      <div class="hero">
+        <h1>AI coding-agent usage,<br>one <em>ccusage_events</em> table.</h1>
+        <p class="tag">summa reads Claude Code, Codex, OpenCode, Cursor, Grok and more on every machine you use, then lands daily, session and per-model rows in local DuckDB — with an optional cloud double-write to ClickHouse + MotherDuck. The result of this project is the live spend dashboard at <a href="https://burn.duyet.net">burn.duyet.net</a>.</p>
       </div>
-      <div class="term-body">
-        <div class="hi">$ summa update --beta</div>
-        <div class="muted">update: target=aarch64-apple-darwin channel=beta install=~/.local/bin/summa current=0.1.2</div>
-        <div class="ok">update: installed ~/.local/bin/summa (0.1.3 channel beta sha 9f2c41e8aa10)</div>
-        <div>&nbsp;</div>
-        <div class="hi">$ summa import --verbose</div>
-        <div>summa — machine: laptop, since: 2026-08-20, import: 3f9c…</div>
-        <div class="muted">  config: ch_host=clickhouse-homelab.duyet.net duckdb=~/.local/share/summa/summa.duckdb password_set=true</div>
-        <div>&nbsp;</div>
-        <div>=== Summary ===</div>
-        <div>&nbsp; source ccusage: 214 rows</div>
-        <div>&nbsp; source cursor: 96 rows</div>
-        <div>&nbsp; source grok: 31 rows</div>
-        <div>&nbsp; sink clickhouse: 341 rows, 412ms</div>
-        <div>&nbsp; sink duckdb: 341 rows, 118ms</div>
-        <div>&nbsp; sink summa-cloud: 341 rows, 203ms</div>
-        <div class="ok">&nbsp; total: 733ms</div>
-        <div class="muted">$<span class="cursor"></span></div>
+
+      <section id="install" aria-label="Install">
+        <div class="snip">
+          <code><span class="prompt">$</span> curl -fsSL https://summa.duyet.net/install.sh | bash</code>
+          <button class="btn copy" type="button" data-copy="curl -fsSL https://summa.duyet.net/install.sh | bash">
+            <span class="lbl">copy</span>
+            <span class="tick" aria-hidden="true">copied</span>
+          </button>
+        </div>
+        <p class="meta">v__VERSION__ · rust cli · channels: <code>beta</code> (master builds) / <code>stable</code> · telemetry hub at summa.duyet.net</p>
+      </section>
+
+      <div class="term" aria-label="summa terminal preview" role="img">
+        <div class="term-bar">
+          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="title">summa</span>
+          <span style="width:52px"></span>
+        </div>
+        <div class="term-body">
+          <div class="hi">$ summa update --beta</div>
+          <div class="muted">update: target=aarch64-apple-darwin channel=beta install=~/.local/bin/summa current=0.1.2</div>
+          <div class="ok">update: installed ~/.local/bin/summa (0.1.3 channel beta sha 9f2c41e8aa10)</div>
+          <div>&nbsp;</div>
+          <div class="hi">$ summa import --verbose</div>
+          <div>summa — machine: laptop, since: 2026-08-20, import: 3f9c…</div>
+          <div class="muted">  config: ch_host=clickhouse-homelab.duyet.net duckdb=~/.local/share/summa/summa.duckdb password_set=true</div>
+          <div>&nbsp;</div>
+          <div>=== Summary ===</div>
+          <div>&nbsp; source ccusage: 214 rows</div>
+          <div>&nbsp; source cursor: 96 rows</div>
+          <div>&nbsp; source grok: 31 rows</div>
+          <div>&nbsp; sink clickhouse: 341 rows, 412ms</div>
+          <div>&nbsp; sink duckdb: 341 rows, 118ms</div>
+          <div>&nbsp; sink summa-cloud: 341 rows, 203ms</div>
+          <div class="ok">&nbsp; total: 733ms</div>
+          <div class="muted">$<span class="cursor"></span></div>
+        </div>
+        <div class="term-foot">
+          <span>cron 1h</span>
+          <span>update then import</span>
+        </div>
       </div>
-      <div class="term-foot">
-        <span>cron 1h</span>
-        <span>update then import</span>
+
+      <div class="prose">
+        <p>summa (Latin: sum, total) is a small Rust CLI. It reads agent logs locally, explodes model breakdowns into rows, dedups by key, and writes one table: <code>ccusage_events</code>. Monthly rollups are just SQL — <code>toYYYYMM(date)</code>.</p>
+        <p>This host is the cloud hub: machines POST with a token, the worker stamps the tenant, and usage lands in ClickHouse and MotherDuck. The analytics product of that pipeline is <a href="https://burn.duyet.net">burn.duyet.net</a>. D1 stores keys only.</p>
       </div>
+
+      <div class="rule" aria-hidden="true">* * *</div>
+
+      <div class="grid" id="channels">
+        <div class="card">
+          <h2>beta &amp; stable channels</h2>
+          <p>Every master build publishes to the rolling <code>beta</code> tag; release-please tags are <code>stable</code>. Switch anytime: <code>summa update --beta</code> or <code>--stable</code>.</p>
+        </div>
+        <div class="card">
+          <h2>auto-update</h2>
+          <p><code>summa config --set update.mode=auto</code> checks hourly in the background while you work; the new binary is active next launch. No cron changes needed.</p>
+        </div>
+        <div class="card">
+          <h2>one table</h2>
+          <p>Daily, session, block, project rows. Model breakdowns exploded. ReplacingMergeTree + DuckDB key delete keep it idempotent.</p>
+        </div>
+        <div class="card">
+          <h2>cron on the box</h2>
+          <p><code>summa cronjob install</code> — launchd, systemd --user, or crontab. The job runs update then import.</p>
+        </div>
+      </div>
+
+      <section class="keys" id="keys" aria-labelledby="keys-h">
+        <h2 id="keys-h">Telemetry keys</h2>
+        <p class="sub">One <code>telemetry_token</code> per machine. The CLI reads it from <code>~/.config/summa/credentials.toml</code>; it only needs read access to your own tenant.</p>
+
+        <form class="field" id="keyform">
+          <input id="keyname" name="name" autocomplete="off" spellcheck="false" placeholder="laptop" aria-label="key name, e.g. laptop">
+          <button type="submit" class="btn" id="mint">mint key</button>
+          <button type="button" class="btn ghost" id="signin-keys" hidden>sign in</button>
+        </form>
+
+        <p class="out" id="keyout" role="status" aria-live="polite" hidden></p>
+        <p class="empty" id="keynote">__CLERK_NOTE__</p>
+
+        <ul class="keylist" id="keylist" hidden></ul>
+      </section>
     </div>
+  </main>
 
-    <div class="prose">
-      <p>summa (Latin: sum, total) is a small Rust CLI. It reads agent logs locally, explodes model breakdowns into rows, dedups by key, and writes one table: <code>ccusage_events</code>. Monthly rollups are just SQL — <code>toYYYYMM(date)</code>.</p>
-      <p>This host is the cloud hub: machines POST with a token, the worker stamps the tenant, and usage lands in ClickHouse and MotherDuck. The analytics product of that pipeline is <a href="https://burn.duyet.net">burn.duyet.net</a>. D1 stores keys only.</p>
-    </div>
-
-    <div class="rule">* * *</div>
-
-    <div class="grid" id="channels">
-      <div>
-        <h2>beta &amp; stable channels</h2>
-        <p>Every master build publishes to the rolling <code>beta</code> tag; release-please tags are <code>stable</code>. Switch anytime: <code>summa update --beta</code> or <code>--stable</code>.</p>
-      </div>
-      <div>
-        <h2>auto-update</h2>
-        <p><code>summa config --set update.mode=auto</code> checks hourly in the background while you work; the new binary is active next launch. No cron changes needed.</p>
-      </div>
-      <div>
-        <h2>one table</h2>
-        <p>Daily, session, block, project rows. Model breakdowns exploded. ReplacingMergeTree + DuckDB key delete keep it idempotent.</p>
-      </div>
-      <div>
-        <h2>cron on the box</h2>
-        <p><code>summa cronjob install</code> — launchd, systemd --user, or crontab. The job runs update then import.</p>
-      </div>
-    </div>
-
-    <div class="keys" id="keys">
-      <label for="keyname">$ summa keys create --name</label>
-      <form class="row" id="keyform">
-        <input id="keyname" name="name" autocomplete="off" placeholder="laptop" aria-label="key name">
-        <button type="submit">mint</button>
-        <button type="button" class="signin" id="signin-keys" hidden>sign in</button>
-      </form>
-      <p class="out" id="keyout" hidden></p>
-      <p class="muted" id="keynote">__CLERK_NOTE__</p>
-    </div>
-
-    <footer>
+  <footer>
+    <div class="wrap">
       <a href="https://github.com/duyet/summa">github.com/duyet/summa</a>
       · mit
       · <a href="/install.sh">install.sh</a>
       · <a href="https://burn.duyet.net">burn.duyet.net</a>
-    </footer>
-  </div>
+    </div>
+  </footer>
+
   <script>
     (function () {
-      var btn = document.getElementById("copy");
-      var cmd = "curl -fsSL https://summa.duyet.net/install.sh | bash";
-      btn.addEventListener("click", function () {
-        navigator.clipboard.writeText(cmd).then(function () {
-          btn.textContent = "copied";
-          btn.classList.add("ok");
-          setTimeout(function () {
-            btn.textContent = "copy";
-            btn.classList.remove("ok");
-          }, 1400);
+      "use strict";
+
+      function copyText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          return navigator.clipboard.writeText(text);
+        }
+        return new Promise(function (resolve, reject) {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          var ok = false;
+          try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+          document.body.removeChild(ta);
+          ok ? resolve() : reject(new Error("copy unavailable"));
+        });
+      }
+
+      function flashCopied(btn) {
+        btn.dataset.state = "done";
+        btn.disabled = true;
+        window.setTimeout(function () {
+          btn.dataset.state = "";
+          btn.disabled = false;
+        }, 1400);
+      }
+
+      Array.prototype.forEach.call(document.querySelectorAll("[data-copy]"), function (btn) {
+        btn.addEventListener("click", function () {
+          copyText(btn.dataset.copy).then(function () {
+            flashCopied(btn);
+          }, function () {
+            var lbl = btn.querySelector(".lbl");
+            if (!lbl) return;
+            var was = lbl.textContent;
+            lbl.textContent = "press ⌘C";
+            window.setTimeout(function () { lbl.textContent = was; }, 1600);
+          });
         });
       });
 
+      var topbar = document.getElementById("topbar");
+      var sentinel = document.createElement("div");
+      sentinel.setAttribute("aria-hidden", "true");
+      sentinel.style.cssText = "position:absolute;top:0;height:1px;width:1px;";
+      document.body.prepend(sentinel);
+      if ("IntersectionObserver" in window) {
+        new IntersectionObserver(function (entries) {
+          topbar.dataset.stuck = entries[0].isIntersecting ? "false" : "true";
+        }, { threshold: 1 }).observe(sentinel);
+      }
+
       var PK = "__CLERK_PK__";
       var clerk = null;
+      var busy = false;
       var out = document.getElementById("keyout");
+      var mint = document.getElementById("mint");
+      var form = document.getElementById("keyform");
+      var list = document.getElementById("keylist");
       var signinKeys = document.getElementById("signin-keys");
       var signinNav = document.getElementById("signin-nav");
       var navUser = document.getElementById("nav-user");
 
       function openClerk() {
-        if (!clerk || !PK) return;
-        clerk.openSignIn();
+        if (clerk) clerk.openSignIn();
       }
 
       function showSignedIn(name) {
@@ -379,83 +644,224 @@
         navUser.textContent = name || "";
         signinNav.hidden = true;
         signinKeys.hidden = true;
+        mint.hidden = false;
+        loadKeys();
       }
 
       function showSignedOut() {
         navUser.hidden = true;
         signinNav.hidden = !PK;
         signinKeys.hidden = !PK;
+        // No Clerk means no session path: don't offer a mint that cannot work.
+        if (!PK) { mint.hidden = true; }
+        list.hidden = true;
+        list.textContent = "";
       }
 
-      if (PK && window.Clerk) {
-        window.Clerk.addListener(function (e) {
-          if (e && e.user) { showSignedIn(e.user.username || e.user.firstName); }
+      function setOut(text, isError) {
+        out.hidden = false;
+        out.className = "out";
+        var span = document.createElement("span");
+        span.className = isError ? "msg err" : "msg";
+        span.textContent = text;
+        out.textContent = "";
+        out.appendChild(span);
+      }
+
+      function setBusy(state) {
+        busy = state;
+        mint.disabled = state;
+        mint.setAttribute("aria-busy", state ? "true" : "false");
+        mint.textContent = state ? "minting…" : "mint key";
+      }
+
+      function shortDate(iso) {
+        if (!iso) return "";
+        var d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso).slice(0, 10);
+        return d.toISOString().slice(0, 10);
+      }
+
+      function renderKeys(keys) {
+        list.textContent = "";
+        if (!keys.length) { list.hidden = true; return; }
+        keys.forEach(function (k) {
+          var li = document.createElement("li");
+          li.dataset.revoked = k.revoked_at ? "true" : "false";
+
+          var name = document.createElement("span");
+          name.className = "k-name";
+          name.textContent = k.name || "default";
+
+          var pre = document.createElement("code");
+          pre.className = "k-pre";
+          pre.textContent = k.prefix + "…";
+
+          var when = document.createElement("time");
+          when.className = "k-when";
+          when.dateTime = k.created_at || "";
+          when.textContent = shortDate(k.created_at);
+
+          var rev = document.createElement("button");
+          rev.type = "button";
+          rev.className = "btn ghost k-rev";
+          rev.textContent = k.revoked_at ? "revoked" : "revoke";
+          if (k.revoked_at) {
+            rev.disabled = true;
+          } else {
+            rev.addEventListener("click", function () { revoke(k.id, rev); });
+          }
+
+          li.appendChild(name);
+          li.appendChild(pre);
+          li.appendChild(when);
+          li.appendChild(rev);
+          list.appendChild(li);
         });
-        window.Clerk.load({ publishableKey: PK })
-          .then(function () {
-            clerk = window.Clerk;
-            var u = clerk.user;
-            if (u) {
-              showSignedIn(u.username || u.firstName);
-            } else {
-              showSignedOut();
-            }
-          })
-          .catch(function () { showSignedOut(); });
-      } else {
-        showSignedOut();
+        list.hidden = false;
       }
 
-      signinNav.addEventListener("click", openClerk);
-      signinKeys.addEventListener("click", openClerk);
+      function loadKeys() {
+        return sessionHeaders({ "content-type": "application/json" })
+          .then(function (h) { return fetch("/v1/keys", { headers: h }); })
+          .then(function (r) {
+            if (!r.ok) { list.hidden = true; return null; }
+            return r.json();
+          })
+          .then(function (j) {
+            if (j && j.keys) renderKeys(j.keys);
+          })
+          .catch(function () { list.hidden = true; });
+      }
+
+      function revoke(id, btn) {
+        btn.disabled = true;
+        sessionHeaders({ "content-type": "application/json" })
+          .then(function (h) {
+            return fetch("/v1/keys/" + encodeURIComponent(id), { method: "DELETE", headers: h });
+          })
+          .then(function (r) {
+            if (!r.ok) { btn.disabled = false; setOut("could not revoke that key", true); return; }
+            return loadKeys();
+          })
+          .catch(function () { btn.disabled = false; });
+      }
 
       function sessionHeaders(headers) {
         if (!clerk || !clerk.session || !clerk.session.getToken) {
           return Promise.resolve(headers);
         }
         return clerk.session.getToken().then(function (token) {
-          if (token) {
-            headers.Authorization = "Bearer " + token;
-          }
+          if (token) { headers.Authorization = "Bearer " + token; }
           return headers;
         });
       }
 
-      var form = document.getElementById("keyform");
+      signinNav.addEventListener("click", openClerk);
+      signinKeys.addEventListener("click", openClerk);
+
       form.addEventListener("submit", function (e) {
         e.preventDefault();
+        if (busy) return;
+        setBusy(true);
         out.hidden = false;
-        out.className = "out";
-        out.textContent = "minting…";
+        setOut("minting…", false);
+
         var name = document.getElementById("keyname").value.trim() || "default";
-        var headers = { "content-type": "application/json" };
-        sessionHeaders(headers).then(function (headers) {
-          return fetch("/v1/keys", {
-            method: "POST",
-            headers: headers,
-            body: JSON.stringify({ name: name }),
-          });
-        }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+        sessionHeaders({ "content-type": "application/json" })
+          .then(function (h) {
+            return fetch("/v1/keys", {
+              method: "POST",
+              headers: h,
+              body: JSON.stringify({ name: name }),
+            });
+          })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
           .then(function (x) {
             if (!x.ok) {
-              out.className = "out err";
               if ((x.j && x.j.error) === "unauthorized") {
-                out.innerHTML = "unauthorized — <a href=\"#\" id=\"signin-link\">sign in with Clerk</a> to mint keys";
-                var link = document.getElementById("signin-link");
-                if (link) link.addEventListener("click", function (ev) { ev.preventDefault(); openClerk(); });
+                setOut("unauthorized — sign in with Clerk to mint keys", true);
                 signinKeys.hidden = !PK;
               } else {
-                out.textContent = (x.j && x.j.error) ? x.j.error : "unauthorized";
+                setOut((x.j && x.j.error) || "unauthorized", true);
               }
               return;
             }
-            out.textContent = "telemetry_token = \"" + x.j.token + "\"\n# shown once. put in ~/.config/summa/credentials.toml";
+            showSecret(x.j.token);
+            loadKeys();
           })
-          .catch(function () {
-            out.className = "out err";
-            out.textContent = "network error";
-          });
+          .catch(function () { setOut("network error", true); })
+          .then(function () { setBusy(false); });
       });
+
+      function showSecret(token) {
+        var snippet = "# ~/.config/summa/credentials.toml\ntelemetry_token = \"" + token + "\"";
+        out.hidden = true;
+
+        var existing = document.getElementById("secret");
+        if (existing) existing.remove();
+
+        var box = document.createElement("div");
+        box.className = "secret";
+        box.id = "secret";
+
+        var cap = document.createElement("span");
+        cap.className = "cap";
+        cap.textContent = "shown once";
+
+        var row = document.createElement("div");
+        row.className = "row";
+
+        var pre = document.createElement("pre");
+        pre.id = "secret-value";
+        pre.textContent = snippet;
+
+        var btn = document.createElement("button");
+        btn.className = "copy";
+        btn.type = "button";
+        btn.dataset.copy = snippet;
+        var lbl = document.createElement("span");
+        lbl.className = "lbl";
+        lbl.textContent = "copy";
+        var tick = document.createElement("span");
+        tick.className = "tick";
+        tick.setAttribute("aria-hidden", "true");
+        tick.textContent = "copied";
+        btn.appendChild(lbl);
+        btn.appendChild(tick);
+        btn.addEventListener("click", function () {
+          copyText(snippet).then(function () { flashCopied(btn); }, function () {
+            lbl.textContent = "press ⌘C";
+            window.setTimeout(function () { lbl.textContent = "copy"; }, 1600);
+          });
+        });
+
+        var note = document.createElement("p");
+        note.className = "note";
+        note.textContent = "This is the only time the token is shown. Copy it now, then restart the import on that machine.";
+
+        row.appendChild(pre);
+        row.appendChild(btn);
+        box.appendChild(cap);
+        box.appendChild(row);
+        box.appendChild(note);
+        form.parentNode.insertBefore(box, list);
+      }
+
+      if (PK && window.Clerk) {
+        window.Clerk.addListener(function (e) {
+          if (e && e.user) showSignedIn(e.user.username || e.user.firstName);
+        });
+        window.Clerk.load({ publishableKey: PK })
+          .then(function () {
+            clerk = window.Clerk;
+            var u = clerk.user;
+            if (u) { showSignedIn(u.username || u.firstName); } else { showSignedOut(); }
+          })
+          .catch(function () { showSignedOut(); });
+      } else {
+        showSignedOut();
+      }
     })();
   </script>
   __CLERK_SCRIPT__

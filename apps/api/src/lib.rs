@@ -345,6 +345,161 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_does_not_advertise_commands_that_do_not_exist() {
+        // `summa keys create` was printed as a label, but no Keys variant exists
+        // in the CLI (apps/cli/src/cli.rs). A landing page that teaches a broken
+        // command costs more trust than it earns.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(
+            !html.contains("summa keys"),
+            "page must not reference a `summa keys` subcommand that does not exist"
+        );
+    }
+
+    #[test]
+    fn minted_token_is_copyable() {
+        // The token is shown exactly once and then only hashed server-side, so
+        // hand-selecting a 70-char secret from `word-break: break-all` text is a
+        // real failure mode. The mint result must ship its own copy control.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains("shown once"), "must warn the token is one-shot");
+        assert!(
+            html.contains("className = \"secret\""),
+            "mint result needs a block built for the token"
+        );
+        assert!(
+            html.contains("className = \"copy\""),
+            "the one-shot token block needs its own copy control, not just the install one"
+        );
+        assert!(
+            html.contains("data-copy"),
+            "copy controls carry their text via data-copy"
+        );
+        assert!(
+            !html.contains("word-break: break-all"),
+            "never break a secret across lines; wrap on the boundary instead"
+        );
+    }
+
+    #[test]
+    fn dashboard_exposes_key_list_and_revoke() {
+        // GET /v1/keys and DELETE /v1/keys/:id already exist (lib.rs). Without
+        // UI callers a tenant can mint keys forever and never see or kill one.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains("/v1/keys"), "must list keys from the API");
+        assert!(
+            html.contains("encodeURIComponent(id)"),
+            "revoke must target a specific key id"
+        );
+        assert!(html.contains("revoked"), "must render revoked keys, not hide them");
+    }
+
+    #[test]
+    fn mint_is_guarded_against_double_submit() {
+        // POST /v1/keys mints a new secret every call. A double click silently
+        // burns a key that is never displayed, so the submit handler re-enters
+        // through a busy latch.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains("if (busy) return"), "submit must latch while in flight");
+        assert!(html.contains("setBusy(false)"), "busy state must always be released");
+    }
+
+    #[test]
+    fn dashboard_is_keyboard_and_motion_accessible() {
+        // Regression guard: the page is dark-on-dark, so low-contrast greys and
+        // missing focus rings are invisible to sighted mouse users but block
+        // keyboard and low-vision users outright.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains(":focus-visible"), "interactive elements need a focus ring");
+        assert!(html.contains("prefers-reduced-motion"), "motion must be opt-out");
+        assert!(html.contains("--dim: #8a8a83"), "muted text must clear WCAG AA on --bg");
+    }
+
+    #[test]
+    fn dashboard_has_landmarks_and_heading_order() {
+        // Keyboard and screen-reader users navigate by landmark and heading
+        // level; the keys panel previously had no heading at all.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains("<main"), "page needs a main landmark");
+        assert!(html.contains("class=\"skip\""), "needs a skip link past the nav");
+        assert!(html.contains("aria-label=\"Primary\""), "nav must be named");
+        assert!(html.contains("id=\"keys-h\""), "the keys panel needs a heading");
+        assert!(
+            html.contains("aria-labelledby=\"keys-h\""),
+            "the keys section must point at its heading"
+        );
+    }
+
+    #[test]
+    fn copy_targets_keep_a_40px_hit_area() {
+        // The one-shot secret block builds its copy control in JS, so a
+        // `min-height` declared only on `.btn` left it an 18px sliver — well
+        // under the 40px floor and near the 44px touch target. The rule belongs
+        // on `.copy` so every copy control inherits it however it is created.
+        let html = super::dashboard_html("", "0.1.1");
+        let copy_rule = html
+            .split(".copy {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("a .copy rule must exist");
+        assert!(
+            copy_rule.contains("min-height: 40px"),
+            "min-height must be declared on .copy, not inherited from .btn, \
+             so the JS-built secret copy control also gets a 40px target"
+        );
+    }
+
+    #[test]
+    fn sticky_nav_does_not_inherit_page_bottom_padding() {
+        // `.topbar-in` also carried `.wrap`, whose 72px bottom padding inflated
+        // the bar from 52px to 113px — measured in a real browser, invisible in
+        // the diff. The bar needs its own measure with no vertical padding.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains("class=\"wrap-bar topbar-in\""));
+        assert!(
+            !html.contains("class=\"wrap topbar-in\""),
+            "the sticky bar must not reuse the page .wrap padding"
+        );
+    }
+
+    #[test]
+    fn primary_mint_button_is_styled_not_browser_default() {
+        // A missing `btn` class silently falls back to the UA grey button, so
+        // the main call to action rendered unstyled while tests still passed.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(
+            html.contains("class=\"btn\" id=\"mint\""),
+            "the mint button must carry the button class"
+        );
+    }
+
+    #[test]
+    fn key_names_are_rendered_as_text_not_markup() {
+        // Key names are user-supplied and returned by the API. Building rows
+        // with innerHTML would make the keys panel a stored-XSS sink for an
+        // account that can name its own keys.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains("textContent = k.name"));
+        let secret_rendering = html
+            .split("function showSecret")
+            .nth(1)
+            .expect("showSecret must exist");
+        assert!(
+            secret_rendering.contains("pre.textContent = snippet"),
+            "the token must be set via textContent"
+        );
+    }
+
+    #[test]
+    fn wide_terminal_output_scrolls_instead_of_clipping() {
+        // `.term { overflow: hidden }` with a non-breaking `<code>` install line
+        // pushed the real command off-screen on narrow viewports.
+        let html = super::dashboard_html("", "0.1.1");
+        assert!(html.contains("overflow-x: auto"), "wide rows must scroll, not clip");
+        assert!(html.contains("overflow-wrap: anywhere"), "long commands must wrap");
+    }
+
+    #[test]
     fn dashboard_with_clerk_injects_script_and_signin() {
         let html = super::dashboard_html("pk_test_x", "0.1.2");
         assert!(html.contains("data-clerk-publishable-key=\"pk_test_x\""));
