@@ -15,6 +15,15 @@ pub struct ModelRates {
     pub cache_read: f64,
     pub cache_write: f64,
     pub output: f64,
+    /// True when `input` already contains the cached prefix, so cache must be
+    /// billed as a discount *within* input rather than added on top.
+    ///
+    /// OpenAI's API reports prompt tokens inclusive of cached tokens, and this
+    /// repo's Codex normalisation keeps them that way (`inputTokens: 100` with
+    /// `cachedInputTokens: 50` yields `input_tokens = 100`,
+    /// `cache_read_tokens = 50`). Anthropic and Google report cache
+    /// separately, so theirs is false.
+    pub input_includes_cache: bool,
 }
 
 const FREE: ModelRates = ModelRates {
@@ -22,6 +31,7 @@ const FREE: ModelRates = ModelRates {
     cache_read: 0.0,
     cache_write: 0.0,
     output: 0.0,
+    input_includes_cache: false,
 };
 
 /// Gemini 3 Flash Preview.
@@ -30,6 +40,7 @@ const GEMINI_3_FLASH: ModelRates = ModelRates {
     cache_read: 0.05,
     cache_write: 0.50,
     output: 3.00,
+    input_includes_cache: false,
 };
 
 /// Gemini 3.6 / 3.7 / 3.8 Flash. Introductory rates through 2026-12-31, then
@@ -39,6 +50,7 @@ const GEMINI_36_FLASH: ModelRates = ModelRates {
     cache_read: 0.075,
     cache_write: 0.75,
     output: 3.75,
+    input_includes_cache: false,
 };
 
 /// Gemini 3.5 Flash.
@@ -47,6 +59,7 @@ const GEMINI_35_FLASH: ModelRates = ModelRates {
     cache_read: 0.15,
     cache_write: 1.50,
     output: 9.00,
+    input_includes_cache: false,
 };
 
 /// Gemini 3.5 Flash-Lite.
@@ -55,6 +68,7 @@ const GEMINI_35_FLASH_LITE: ModelRates = ModelRates {
     cache_read: 0.03,
     cache_write: 0.30,
     output: 2.50,
+    input_includes_cache: false,
 };
 
 /// Gemini 3.1 Flash-Lite.
@@ -63,6 +77,7 @@ const GEMINI_31_FLASH_LITE: ModelRates = ModelRates {
     cache_read: 0.025,
     cache_write: 0.25,
     output: 1.50,
+    input_includes_cache: false,
 };
 
 /// Gemini 2.5 Flash.
@@ -71,6 +86,7 @@ const GEMINI_25_FLASH: ModelRates = ModelRates {
     cache_read: 0.03,
     cache_write: 0.30,
     output: 2.50,
+    input_includes_cache: false,
 };
 
 /// Gemini 2.5 Pro (≤200k prompt).
@@ -79,6 +95,7 @@ const GEMINI_25_PRO: ModelRates = ModelRates {
     cache_read: 0.125,
     cache_write: 1.25,
     output: 10.00,
+    input_includes_cache: false,
 };
 
 /// Gemini 3.1 Pro Preview (≤200k prompt).
@@ -87,6 +104,7 @@ const GEMINI_31_PRO: ModelRates = ModelRates {
     cache_read: 0.20,
     cache_write: 2.00,
     output: 12.00,
+    input_includes_cache: false,
 };
 
 /// Claude Sonnet 4.x (Anthropic list, cache write = 1.25× input).
@@ -95,6 +113,7 @@ const CLAUDE_SONNET_4: ModelRates = ModelRates {
     cache_read: 0.30,
     cache_write: 3.75,
     output: 15.00,
+    input_includes_cache: false,
 };
 
 /// Claude Sonnet 5 / 5.5. The $2/$10 launch price became standard price; the
@@ -104,6 +123,7 @@ const CLAUDE_SONNET_5: ModelRates = ModelRates {
     cache_read: 0.20,
     cache_write: 2.50,
     output: 10.00,
+    input_includes_cache: false,
 };
 
 /// Claude Opus 4.1 / 4 (retired on the first-party API, still live on Bedrock
@@ -113,6 +133,7 @@ const CLAUDE_OPUS_4: ModelRates = ModelRates {
     cache_read: 1.50,
     cache_write: 18.75,
     output: 75.00,
+    input_includes_cache: false,
 };
 
 /// Claude Opus 4.5 through 4.8. Opus 4.1 kept the older $15/$75 rates, so the
@@ -122,6 +143,7 @@ const CLAUDE_OPUS_4_5: ModelRates = ModelRates {
     cache_read: 0.50,
     cache_write: 6.25,
     output: 25.00,
+    input_includes_cache: false,
 };
 
 /// Claude Opus 5 / 5.5.
@@ -130,6 +152,7 @@ const CLAUDE_OPUS_5: ModelRates = ModelRates {
     cache_read: 0.50,
     cache_write: 6.25,
     output: 25.00,
+    input_includes_cache: false,
 };
 
 /// Claude Haiku 4.5.
@@ -138,6 +161,7 @@ const CLAUDE_HAIKU_4_5: ModelRates = ModelRates {
     cache_read: 0.10,
     cache_write: 1.25,
     output: 5.00,
+    input_includes_cache: false,
 };
 
 /// Claude Haiku 3.5.
@@ -146,6 +170,7 @@ const CLAUDE_HAIKU_3_5: ModelRates = ModelRates {
     cache_read: 0.08,
     cache_write: 1.00,
     output: 4.00,
+    input_includes_cache: false,
 };
 
 /// Z.AI / GLM mid-tier (OpenRouter-ish).
@@ -154,6 +179,142 @@ const GLM_MID: ModelRates = ModelRates {
     cache_read: 0.05,
     cache_write: 0.50,
     output: 1.50,
+    input_includes_cache: false,
+};
+
+/// OpenAI gpt-5.5 (short context, <272K).
+const OPENAI_GPT_55: ModelRates = ModelRates {
+    input: 5.00,
+    cache_read: 0.50,
+    cache_write: 5.00,
+    output: 30.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-5.4 / gpt-5.2 / gpt-5.1 / gpt-5 (short context).
+const OPENAI_GPT_5: ModelRates = ModelRates {
+    input: 2.50,
+    cache_read: 0.25,
+    cache_write: 2.50,
+    output: 15.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-5.4-mini.
+const OPENAI_GPT_5_MINI: ModelRates = ModelRates {
+    input: 0.75,
+    cache_read: 0.075,
+    cache_write: 0.75,
+    output: 4.50,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-5.4-nano.
+const OPENAI_GPT_5_NANO: ModelRates = ModelRates {
+    input: 0.20,
+    cache_read: 0.02,
+    cache_write: 0.20,
+    output: 1.25,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-6 sol.
+const OPENAI_GPT_6: ModelRates = ModelRates {
+    input: 2.00,
+    cache_read: 0.20,
+    cache_write: 2.50,
+    output: 10.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-6 luna.
+const OPENAI_GPT_6_LUNA: ModelRates = ModelRates {
+    input: 0.10,
+    cache_read: 0.01,
+    cache_write: 0.125,
+    output: 0.50,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-6 astra.
+const OPENAI_GPT_6_ASTRA: ModelRates = ModelRates {
+    input: 10.00,
+    cache_read: 1.00,
+    cache_write: 12.50,
+    output: 50.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-4.1.
+const OPENAI_GPT_41: ModelRates = ModelRates {
+    input: 2.00,
+    cache_read: 0.50,
+    cache_write: 2.00,
+    output: 8.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-4o.
+const OPENAI_GPT_4O: ModelRates = ModelRates {
+    input: 2.50,
+    cache_read: 1.25,
+    cache_write: 2.50,
+    output: 10.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-4o-mini.
+const OPENAI_GPT_4O_MINI: ModelRates = ModelRates {
+    input: 0.15,
+    cache_read: 0.075,
+    cache_write: 0.15,
+    output: 0.60,
+    input_includes_cache: true,
+};
+
+/// OpenAI o3.
+const OPENAI_O3: ModelRates = ModelRates {
+    input: 2.00,
+    cache_read: 0.50,
+    cache_write: 2.00,
+    output: 8.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI o4-mini / o3-mini.
+const OPENAI_O_MINI: ModelRates = ModelRates {
+    input: 1.10,
+    cache_read: 0.275,
+    cache_write: 1.10,
+    output: 4.40,
+    input_includes_cache: true,
+};
+
+/// OpenAI o1.
+const OPENAI_O1: ModelRates = ModelRates {
+    input: 15.00,
+    cache_read: 7.50,
+    cache_write: 15.00,
+    output: 60.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-5.3-codex (the Codex CLI default).
+const OPENAI_CODEX: ModelRates = ModelRates {
+    input: 1.75,
+    cache_read: 0.175,
+    cache_write: 1.75,
+    output: 14.00,
+    input_includes_cache: true,
+};
+
+/// OpenAI gpt-3.5-turbo.
+const OPENAI_GPT_35: ModelRates = ModelRates {
+    input: 0.50,
+    cache_read: 0.05,
+    cache_write: 0.50,
+    output: 1.50,
+    input_includes_cache: true,
 };
 
 /// Default when model is unknown — mid Flash tier.
@@ -296,8 +457,63 @@ pub fn rates_for_model(model: &str) -> ModelRates {
         return CLAUDE_SONNET_5;
     }
 
-    // Google Gemini. Pro and Lite are separate price tiers from Flash, and
-    // 3.6/3.7/3.8 Flash are cheaper than 3.5, so the family name is not enough.
+    // OpenAI. Absent entirely before, so every gpt-* model fell through to the
+    // Flash default and was underpriced by up to 10x on output.
+    if m.contains("gpt-") || m.contains("openai/") || m.contains("o1") || m.contains("o3") || m.contains("o4") {
+        if m.contains("codex") {
+            return OPENAI_CODEX;
+        }
+        // o-series first: "o4-mini" also contains "mini" and would otherwise
+        // resolve to the gpt-5.4-mini tier.
+        if m.contains("o1") {
+            return OPENAI_O1;
+        }
+        if m.contains("o3") || m.contains("o4") {
+            if m.contains("mini") {
+                return OPENAI_O_MINI;
+            }
+            if m.contains("pro") {
+                return OPENAI_O1;
+            }
+            return OPENAI_O3;
+        }
+        // Suffix tiers must be checked before the bare family.
+        if m.contains("nano") {
+            return OPENAI_GPT_5_NANO;
+        }
+        if m.contains("mini") {
+            if m.contains("4o") {
+                return OPENAI_GPT_4O_MINI;
+            }
+            return OPENAI_GPT_5_MINI;
+        }
+        if m.contains("astra") {
+            return OPENAI_GPT_6_ASTRA;
+        }
+        if m.contains("gpt-6") {
+            if m.contains("luna") {
+                return OPENAI_GPT_6_LUNA;
+            }
+            return OPENAI_GPT_6;
+        }
+        if m.contains("gpt-4o") {
+            return OPENAI_GPT_4O;
+        }
+        if m.contains("gpt-4.1") || m.contains("gpt-41") {
+            return OPENAI_GPT_41;
+        }
+        if m.contains("gpt-3.5") {
+            return OPENAI_GPT_35;
+        }
+        if m.contains("gpt-5.5") {
+            return OPENAI_GPT_55;
+        }
+        if m.contains("gpt-5") {
+            return OPENAI_GPT_5;
+        }
+    }
+
+
     if m.contains("gemini") || m.contains("flash") {
         return match gemini_tier(&m) {
             Some((GeminiTier::Pro, major, _)) => {
@@ -349,10 +565,23 @@ pub fn estimate_model_cost(
     output_tokens: u64,
 ) -> f64 {
     let rates = rates_for_model(model);
-    (input_tokens as f64 / 1_000_000.0) * rates.input
-        + (cache_read_tokens as f64 / 1_000_000.0) * rates.cache_read
-        + (cache_write_tokens as f64 / 1_000_000.0) * rates.cache_write
-        + (output_tokens as f64 / 1_000_000.0) * rates.output
+    let m = 1_000_000.0;
+    if rates.input_includes_cache {
+        // OpenAI reports prompt tokens inclusive of the cached prefix, so the
+        // cached part is billed at the discount rate and only the remainder at
+        // the full rate. Adding cache on top would bill the same tokens twice.
+        let cached = cache_read_tokens.min(input_tokens);
+        let uncached = input_tokens - cached;
+        (uncached as f64 / m) * rates.input
+            + (cached as f64 / m) * rates.cache_read
+            + (cache_write_tokens as f64 / m) * rates.cache_write
+            + (output_tokens as f64 / m) * rates.output
+    } else {
+        (input_tokens as f64 / m) * rates.input
+            + (cache_read_tokens as f64 / m) * rates.cache_read
+            + (cache_write_tokens as f64 / m) * rates.cache_write
+            + (output_tokens as f64 / m) * rates.output
+    }
 }
 
 fn round_cents(cost: f64) -> f64 {
@@ -633,6 +862,59 @@ mod tests {
         let r = rates_for_model("anthropic/claude-sonnet-4-5");
         assert!(r.input > 0.0 && r.output > 0.0);
         let g = rates_for_model("openai/gpt-5.5");
-        assert!(g.input > 0.0, "unknown openai models must not be free");
+        assert!((g.input - 5.00).abs() < 1e-9, "gpt-5.5 is $5/MTok");
+    }
+
+    #[test]
+    fn openai_models_no_longer_fall_through_to_the_flash_default() {
+        // Before OpenAI had any rates, every gpt-* model resolved to
+        // DEFAULT_RATES ($0.50 / $3.00) — a 10x underpricing on output.
+        for (id, input, output) in [
+            ("gpt-5.5", 5.00, 30.00),
+            ("gpt-5.4", 2.50, 15.00),
+            ("gpt-5", 2.50, 15.00),
+            ("gpt-5.4-mini", 0.75, 4.50),
+            ("gpt-5.4-nano", 0.20, 1.25),
+            ("gpt-4.1", 2.00, 8.00),
+            ("gpt-4o", 2.50, 10.00),
+            ("gpt-4o-mini", 0.15, 0.60),
+            ("gpt-5.3-codex", 1.75, 14.00),
+            ("o3", 2.00, 8.00),
+            ("o4-mini", 1.10, 4.40),
+            ("o1", 15.00, 60.00),
+        ] {
+            let r = rates_for_model(id);
+            assert!((r.input - input).abs() < 1e-9, "{id} input should be {input}");
+            assert!((r.output - output).abs() < 1e-9, "{id} output should be {output}");
+        }
+    }
+
+    #[test]
+    fn openai_nano_and_mini_suffixes_beat_their_parent() {
+        // Suffix ordering: "gpt-5.4-nano" must not resolve to gpt-5.4.
+        let nano = rates_for_model("gpt-5.4-nano");
+        let base = rates_for_model("gpt-5.4");
+        assert!(nano.input < base.input);
+        let mini = rates_for_model("gpt-5.4-mini");
+        assert!(mini.input < base.input);
+    }
+
+    #[test]
+    fn openai_cache_is_billed_as_a_discount_not_added_on_top() {
+        // OpenAI's prompt tokens include the cached prefix, and this repo's
+        // Codex normalisation keeps them that way. 1M input of which 800k is
+        // cached bills as 200k*5.00 + 800k*0.50 = $1.40, not $5.00 + $0.40.
+        let c = estimate_model_cost("gpt-5.5", 1_000_000, 800_000, 0, 0);
+        assert!((c - 1.40).abs() < 0.01, "got {c}");
+        // A cache read larger than input cannot make the cost negative.
+        let over = estimate_model_cost("gpt-5.5", 10, 1_000_000, 0, 0);
+        assert!(over >= 0.0, "got {over}");
+    }
+
+    #[test]
+    fn anthropic_and_gemini_cache_still_add_on_top() {
+        // Their APIs report cache separately, so the four-term sum stands.
+        let c = estimate_model_cost("claude-sonnet-4-5", 1_000_000, 1_000_000, 0, 0);
+        assert!((c - (3.00 + 0.30)).abs() < 0.01, "got {c}");
     }
 }
