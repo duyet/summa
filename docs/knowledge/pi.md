@@ -66,6 +66,21 @@ counts billable turns.
 Cost prefers `usage.cost.total` and falls back to `util::pricing` public rates
 when absent. Zero-token turns produce no row.
 
+## Not read via ccusage
+
+pi is read **natively** and is deliberately absent from the `ccusage`
+subprocess list in `import_all.rs`. Two parsers claiming the same
+`source = "pi"` write the same dedup key, so one silently overwrites the
+other and the surviving row depends on which finished last — meaning a
+parser that miscounts forks could inflate the dashboard nondeterministically.
+`companion_source_ids_exclude_natively_covered_agents` guards the list, and
+`no_source_name_is_registered_twice` guards the wider set.
+
+The native reader is also strictly better here: it dedupes forks and counts
+the `usage`, `compaction` and `branch_summary` entries. `ccusage` also ignores
+`PI_CODING_AGENT_DIR`, so it would read the real `~/.pi` even when the native
+source is pointed at a fixture.
+
 ## Skipping
 
 `summa import --skip-pi`. A machine without pi is not an error: the source
