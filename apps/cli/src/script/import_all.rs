@@ -15,9 +15,11 @@ use crate::source::ccusage::{CcusageSource, CcusageSourceOptions};
 use crate::source::companion::{CompanionSource as CompanionDataSource, CompanionSourceOptions};
 use crate::source::cursor::{CursorSource, CursorSourceOptions};
 use crate::source::devin::{DevinSource, DevinSourceOptions};
+use crate::source::fx::{FxSource, FxSourceOptions};
 use crate::source::grok::{GrokSource, GrokSourceOptions};
 use crate::source::grok_api::{GrokApiSource, GrokApiSourceOptions};
 use crate::source::hermes::{HermesSource, HermesSourceOptions};
+use crate::source::pi::{PiSource, PiSourceOptions};
 use crate::util::date::resolve_effective_since;
 use std::env;
 
@@ -295,6 +297,32 @@ pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
         })));
     }
 
+    if !args.skip_pi {
+        sources.push(Box::new(PiSource::new(PiSourceOptions {
+            machine_name: machine_name.clone(),
+            hash_projects,
+            verbose,
+            days_back,
+            since: effective_since.clone(),
+            end_date: end_date.clone(),
+            import_id: import_id.clone(),
+            base_dir: None,
+        })));
+    }
+
+    if !args.skip_fx {
+        sources.push(Box::new(FxSource::new(FxSourceOptions {
+            machine_name: machine_name.clone(),
+            hash_projects,
+            verbose,
+            days_back,
+            since: effective_since.clone(),
+            end_date: end_date.clone(),
+            import_id: import_id.clone(),
+            base_dir: None,
+        })));
+    }
+
     if !args.skip_cursor {
         sources.push(Box::new(CursorSource::new(CursorSourceOptions {
             verbose,
@@ -420,6 +448,8 @@ pub fn apply_importer_skips(args: &mut ImportArgs, cfg: &crate::config::Importer
     args.skip_grok |= cfg.skip_grok.unwrap_or(false);
     args.skip_devin |= cfg.skip_devin.unwrap_or(false);
     args.skip_cursor |= cfg.skip_cursor.unwrap_or(false);
+    args.skip_pi |= cfg.skip_pi.unwrap_or(false);
+    args.skip_fx |= cfg.skip_fx.unwrap_or(false);
 }
 
 fn should_skip_companion(args: &ImportArgs, id: &str) -> bool {
@@ -610,6 +640,8 @@ motherduck_token = "md-from-credentials"
             skip_grok: true,
             skip_devin: true,
             skip_cursor: true,
+            skip_pi: true,
+            skip_fx: true,
             skip_clickhouse: false,
             skip_duckdb: false,
             dry_run: true,
@@ -692,6 +724,8 @@ days_back = 30
             skip_grok: true,
             skip_devin: true,
             skip_cursor: true,
+            skip_pi: true,
+            skip_fx: true,
             skip_clickhouse: true,
             skip_duckdb: false,
             dry_run: true,
@@ -721,6 +755,8 @@ days_back = 30
             skip_grok: true,
             skip_devin: true,
             skip_cursor: true,
+            skip_pi: true,
+            skip_fx: true,
             skip_clickhouse: true,
             skip_duckdb: true,
             dry_run: true,

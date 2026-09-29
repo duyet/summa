@@ -48,7 +48,7 @@ Plugin: sources → pipeline runner → sinks. Single table `ccusage_events`.
 
 - CLI crate: `apps/cli` (`summa-import`, binary `summa`)
 - API Worker: `apps/api` (`summa-api`, `workers-rs` wasm)
-- Sources: `apps/cli/src/source/{ccusage,companion,antigravity,hermes,grok,grok_api,cursor,devin}.rs`
+- Sources: `apps/cli/src/source/{ccusage,companion,antigravity,hermes,grok,grok_api,cursor,devin,pi,fx}.rs`
 - Sinks: `apps/cli/src/sink/{clickhouse,duckdb,csv}.rs`
 - Types: `apps/cli/src/model.rs` — `EventRow`
 
