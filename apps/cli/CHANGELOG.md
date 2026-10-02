@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.5](https://github.com/duyet/summa/compare/v0.1.4...v0.1.5) (2026-10-02)
+
+
+### Features
+
+* **cli:** import Command Code usage ([#141](https://github.com/duyet/summa/issues/141)) ([7226379](https://github.com/duyet/summa/commit/72263793b279069efb04f9bcf98177490fabb060))
+* **cli:** import Devin CLI usage ([90f537f](https://github.com/duyet/summa/commit/90f537f661996369c22956e2a67102a46201deb3))
+* **cli:** import pi and fx usage ([#138](https://github.com/duyet/summa/issues/138)) ([21f68dd](https://github.com/duyet/summa/commit/21f68dd2145c5ebb1b8b0cc8a73e5b251c51791f))
+
+
+### Bug Fixes
+
+* **cli:** add OpenAI pricing, which was missing entirely ([#142](https://github.com/duyet/summa/issues/142)) ([d1b03b2](https://github.com/duyet/summa/commit/d1b03b279537bdb312b9d511efe8030b385e1d28))
+* **cli:** refresh Claude and Gemini rates to current list prices ([#139](https://github.com/duyet/summa/issues/139)) ([dd97d2a](https://github.com/duyet/summa/commit/dd97d2a5ee547f113a70bdc1eb3e4a3343588b54))
+* **cli:** stop cost distribution producing negative rows ([#140](https://github.com/duyet/summa/issues/140)) ([349c9c7](https://github.com/duyet/summa/commit/349c9c7519e1b3a844762d5acd9ae8bf49f268a1))
+* **cli:** stop pi being read twice ([#143](https://github.com/duyet/summa/issues/143)) ([7d3aa9f](https://github.com/duyet/summa/commit/7d3aa9fac33a6d7e64aef7e58c10ffe351229301))
+* **cli:** surface hub-rejected rows and hidden sink errors in telemetry ([#145](https://github.com/duyet/summa/issues/145)) ([763adf5](https://github.com/duyet/summa/commit/763adf5b793c20a147f90824a2ce9bdd38b29238))
+
 ## [0.1.4](https://github.com/duyet/summa/compare/v0.1.3...v0.1.4) (2026-09-24)
 
 
