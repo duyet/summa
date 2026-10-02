@@ -26,6 +26,11 @@ pub struct IngestBody {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IngestResponse {
     pub accepted: usize,
+    /// Rows the hub dropped before storing (bad date, empty record_type, …).
+    /// `accepted` counts what it parsed, so without this the shortfall is
+    /// invisible.
+    #[serde(default)]
+    pub rejected: u64,
     pub sinks: Vec<SinkAck>,
 }
 

@@ -216,7 +216,10 @@ async fn ingest(
         st.ok = code == 200;
     }
     let status = StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (status, Json(IngestResponse { accepted, sinks })).into_response()
+    // The cloud hub filters rows it cannot parse and reports that count here.
+    // This in-process server accepts every row it is handed, so the honest
+    // number is zero.
+    (status, Json(IngestResponse { accepted, rejected: 0, sinks })).into_response()
 }
 
 #[derive(Debug, Deserialize)]

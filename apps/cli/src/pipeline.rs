@@ -55,6 +55,10 @@ impl ImportRunner {
                     result.tables_written = write_res.tables_written;
                     result.rows_written = write_res.rows_written;
                     result.duration_ms = write_res.duration_ms;
+                    // A sink that wrote some of the batch and failed on the
+                    // rest reports that here rather than as `Err`. Dropping it
+                    // reported the partial write as a clean one.
+                    result.error = write_res.error;
                 }
                 Err(e) => {
                     result.error = Some(e.to_string());
@@ -117,6 +121,9 @@ mod tests {
         pub name: &'static str,
         pub should_fail_connect: bool,
         pub should_fail_write: bool,
+        /// A sink that stored part of the batch reports it here and still
+        /// returns `Ok`, alongside the rows it did manage to write.
+        pub partial_error: Option<String>,
     }
 
     #[async_trait::async_trait]
@@ -139,7 +146,7 @@ mod tests {
                 tables_written: vec!["ccusage_events".to_string()],
                 rows_written: [("ccusage_events".to_string(), 1)].into(),
                 duration_ms: 1,
-                error: None,
+                error: self.partial_error.clone(),
             })
         }
         async fn close(&mut self) -> anyhow::Result<()> {
@@ -229,11 +236,13 @@ mod tests {
                     name: "sink_ok",
                     should_fail_connect: false,
                     should_fail_write: false,
+                    partial_error: None,
                 }),
                 Box::new(FakeSink {
                     name: "sink_fail",
                     should_fail_connect: false,
                     should_fail_write: true,
+                    partial_error: None,
                 }),
             ],
         };
@@ -242,5 +251,33 @@ mod tests {
         assert_eq!(result.sinks.len(), 2);
         assert!(result.sinks[0].error.is_none());
         assert!(result.sinks[1].error.is_some());
+    }
+
+    /// A sink that stored part of the batch and failed on the rest returns
+    /// `Ok`. Dropping its `error` reported the partial write as a clean one.
+    #[tokio::test]
+    async fn partial_sink_write_reports_error_and_keeps_its_rows() {
+        let mut runner = ImportRunner {
+            sources: vec![Box::new(FakeSource {
+                name: "src",
+                rows: vec![make_row("1")],
+                should_fail: false,
+            })],
+            sinks: vec![Box::new(FakeSink {
+                name: "partial",
+                should_fail_connect: false,
+                should_fail_write: false,
+                partial_error: Some("clickhouse: timeout after 0 of 1 rows".to_string()),
+            })],
+        };
+
+        let result = runner.run().await.unwrap();
+        let sink = &result.sinks[0];
+        assert_eq!(
+            sink.error.as_deref(),
+            Some("clickhouse: timeout after 0 of 1 rows"),
+            "partial write reported as clean"
+        );
+        assert_eq!(sink.rows_written.get("ccusage_events"), Some(&1));
     }
 }
