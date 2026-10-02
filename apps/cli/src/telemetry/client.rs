@@ -69,6 +69,7 @@ impl DataSink for TelemetrySink {
             .ok_or_else(|| anyhow::anyhow!("telemetry sink not connected"))?;
         let url = format!("{}/v1/ingest", self.endpoint);
         let mut accepted = 0u64;
+        let mut errors: Vec<String> = Vec::new();
         for chunk in events.chunks(INGEST_CHUNK) {
             let resp = client
                 .post(&url)
@@ -78,11 +79,13 @@ impl DataSink for TelemetrySink {
                 .send()
                 .await?
                 .error_for_status()?;
-            let body: IngestResponse = resp.json().await.unwrap_or(IngestResponse {
-                accepted: chunk.len(),
-                sinks: Vec::new(),
-            });
-            accepted += body.accepted as u64;
+            // `accepted` is the hub's *parse* count, not a count of rows that
+            // were persisted, so a body we cannot read proves nothing. Guessing
+            // `chunk.len()` here reported a fabricated number of written rows.
+            let body: IngestResponse = resp.json().await.map_err(|e| {
+                anyhow::anyhow!("telemetry ingest returned an unreadable body: {e}")
+            })?;
+            fold_response(&body, &mut accepted, &mut errors);
         }
         let mut rows_written = HashMap::new();
         rows_written.insert("ccusage_events".into(), accepted);
@@ -91,7 +94,7 @@ impl DataSink for TelemetrySink {
             tables_written: vec!["ccusage_events".into()],
             rows_written,
             duration_ms: start.elapsed().as_millis() as u64,
-            error: None,
+            error: (!errors.is_empty()).then(|| errors.join("; ")),
         })
     }
 
@@ -101,9 +104,45 @@ impl DataSink for TelemetrySink {
     }
 }
 
+/// Fold one hub response into the running accepted count and error list.
+///
+/// The hub answers `200` when *any* sink succeeded (`ingest_status_code`), so a
+/// total ClickHouse outage behind a healthy MotherDuck is reported only inside
+/// `sinks[].error`. Nothing read that field, so the import printed the full
+/// row count and exited 0 while half the rows were never stored.
+fn fold_response(body: &IngestResponse, accepted: &mut u64, errors: &mut Vec<String>) {
+    *accepted += body.accepted as u64;
+    if body.rejected > 0 {
+        errors.push(format!("hub rejected {} event(s)", body.rejected));
+    }
+    for sink in &body.sinks {
+        if let Some(e) = &sink.error {
+            errors.push(format!("{}: {} ({} rows written)", sink.name, e, sink.rows));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::SinkAck;
+
+    fn ack(name: &str, rows: u64, error: Option<&str>) -> SinkAck {
+        SinkAck {
+            name: name.into(),
+            rows,
+            duration_ms: 1,
+            error: error.map(str::to_string),
+        }
+    }
+
+    fn fold(responses: &[IngestResponse]) -> (u64, Vec<String>) {
+        let (mut accepted, mut errors) = (0u64, Vec::new());
+        for r in responses {
+            fold_response(r, &mut accepted, &mut errors);
+        }
+        (accepted, errors)
+    }
 
     #[test]
     fn from_parts_requires_token() {
@@ -124,5 +163,92 @@ mod tests {
     fn ingest_chunks_stay_under_worker_cap() {
         assert!(INGEST_CHUNK <= 500);
         assert!(INGEST_CHUNK >= 100);
+    }
+
+    #[test]
+    fn healthy_response_produces_no_error() {
+        let (accepted, errors) = fold(&[IngestResponse {
+            accepted: 3,
+            rejected: 0,
+            sinks: vec![ack("motherduck", 3, None), ack("clickhouse", 3, None)],
+        }]);
+        assert_eq!(accepted, 3);
+        assert!(errors.is_empty(), "clean write reported {errors:?}");
+    }
+
+    #[test]
+    fn accepted_sums_across_chunks() {
+        let (accepted, errors) = fold(&[
+            IngestResponse {
+                accepted: 2,
+                rejected: 0,
+                sinks: vec![ack("motherduck", 2, None)],
+            },
+            IngestResponse {
+                accepted: 5,
+                rejected: 0,
+                sinks: vec![ack("motherduck", 5, None)],
+            },
+        ]);
+        assert_eq!(accepted, 7);
+        assert!(errors.is_empty());
+    }
+
+    /// The regression this fold exists for: the hub returns 200 when any sink
+    /// succeeded, so a dead ClickHouse behind a healthy MotherDuck used to look
+    /// like a clean full write.
+    #[test]
+    fn sink_error_hidden_behind_a_200_is_reported() {
+        let (accepted, errors) = fold(&[IngestResponse {
+            accepted: 4,
+            rejected: 0,
+            sinks: vec![
+                ack("motherduck", 4, None),
+                ack("clickhouse", 0, Some("connection refused")),
+            ],
+        }]);
+        assert_eq!(accepted, 4);
+        assert_eq!(errors.len(), 1, "got {errors:?}");
+        let e = &errors[0];
+        assert!(e.contains("clickhouse"), "sink name missing from {e:?}");
+        assert!(e.contains("connection refused"), "cause missing from {e:?}");
+        assert!(e.contains('0'), "written-row count missing from {e:?}");
+    }
+
+    #[test]
+    fn hub_rejected_rows_are_reported() {
+        let (accepted, errors) = fold(&[IngestResponse {
+            accepted: 10,
+            rejected: 2,
+            sinks: vec![ack("motherduck", 10, None)],
+        }]);
+        assert_eq!(accepted, 10);
+        assert_eq!(errors.len(), 1, "got {errors:?}");
+        assert!(errors[0].contains("rejected 2"), "got {:?}", errors[0]);
+    }
+
+    #[test]
+    fn every_failed_sink_and_rejection_is_listed() {
+        let (_, errors) = fold(&[IngestResponse {
+            accepted: 1,
+            rejected: 1,
+            sinks: vec![
+                ack("motherduck", 0, Some("disk full")),
+                ack("clickhouse", 0, Some("timeout")),
+            ],
+        }]);
+        assert_eq!(errors.len(), 3, "got {errors:?}");
+    }
+
+    /// A hub that predates the field omits it entirely.
+    #[test]
+    fn ingest_response_without_rejected_reads_as_zero() {
+        let r: IngestResponse =
+            serde_json::from_str(r#"{"accepted":2,"sinks":[{"name":"motherduck","rows":2,"duration_ms":1}]}"#)
+                .unwrap();
+        assert_eq!(r.rejected, 0);
+        let (accepted, errors) = fold(&[r]);
+        assert_eq!(accepted, 2);
+        assert!(errors.is_empty());
     }
 }
