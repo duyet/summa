@@ -48,7 +48,7 @@
     "dotenv": "^18.0.0",
     "duckdb": "^1.4.4",
     "duckdb-async": "^1.4.2",
-    "ink": "^7.0.0",
+    "ink": "^8.0.0",
     "ora": "^9.0.0",
     "react": "^19.0.0",
     "react-devtools-core": "^8.0.0",
