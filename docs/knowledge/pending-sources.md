@@ -4,13 +4,18 @@ Findings for tools named in the source-coverage goal that are **not** imported.
 Recorded so the research is not repeated, and so nobody builds a parser against
 guessed field names.
 
-## grokbot — ALREADY COVERED
+## grokbot — now its own source (`grok-bot`)
 
-`grokbot` is not a separate CLI. It is a Cursor usage surface, already
-classified as `source = "cursor-grok-bot"` in `apps/cli/src/source/cursor.rs`
-(`is_grok_bot_event`, matched on a `grok-bot`/`grokbot`/`grok bot` signal or a
-grok model name). Account-wide, so it carries `machine_name = "account"` and
-dedupes across hosts. Nothing to build.
+`grokbot` is not a separate CLI, and there is no Grok Bot token ledger on disk:
+the chat counts live in Cursor's account usage-events feed (`tokenUsage` per
+chat). It used to be covered only as the `cursor-grok-bot` sub-label of
+`source::cursor`, which tied it to `--skip-cursor` and hid it from any query
+looking for a `grok*` source.
+
+It is now `source = "grok-bot"` (`apps/cli/src/source/grok_bot.rs`) with its own
+`--skip-grok-bot` flag, independent of `--skip-grok` and `--skip-cursor`. The
+Cursor source skips the events this source claims, so each chat is still written
+exactly once. Schema and auth: `docs/knowledge/grok-bot.md`.
 
 ## How Command Code was unblocked
 
