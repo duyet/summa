@@ -12,6 +12,12 @@ pub struct DuckDbSink {
     is_motherduck: bool,
 }
 
+/// Cold-cache install. `httpfs` first so MotherDuck's autoload does not
+/// fetch the extension through a custom repository URL.
+fn motherduck_extension_install_sql() -> &'static str {
+    "INSTALL httpfs;\nLOAD httpfs;\nINSTALL motherduck;\nLOAD motherduck;"
+}
+
 fn append_motherduck_token(db_path: &str, token: &str) -> String {
     if token.is_empty() {
         return db_path.to_string();
@@ -129,9 +135,9 @@ impl DuckDbSink {
         Self::open_motherduck(&self.connection_string())
     }
 
-    /// MotherDuck needs its extension loaded. Prefer HTTPS (plain HTTP to
-    /// extensions.duckdb.org fails with HTTP/0.9 on some networks), then open
-    /// the `md:` path. Falls back to auto-install if the local cache is empty.
+    /// MotherDuck needs its extension loaded. LOAD from the local cache when
+    /// present; otherwise install `httpfs` and `motherduck` from DuckDB's
+    /// default repository, then open the `md:` path.
     fn open_motherduck(conn_str: &str) -> anyhow::Result<duckdb::Connection> {
         // duckdb also reads motherduck_token from env (lowercase).
         if let Ok(token) = std::env::var("MOTHERDUCK_TOKEN") {
@@ -140,35 +146,23 @@ impl DuckDbSink {
             }
         }
 
-        let bootstrap = duckdb::Connection::open_in_memory().map_err(|e| {
-            anyhow::anyhow!("motherduck bootstrap open failed: {e}")
-        })?;
-
-        // Force HTTPS extension repo before INSTALL (HTTP is broken here).
-        let _ = bootstrap.execute_batch(
-            "SET custom_extension_repository = 'https://extensions.duckdb.org';",
-        );
+        let bootstrap = duckdb::Connection::open_in_memory()
+            .map_err(|e| anyhow::anyhow!("motherduck bootstrap open failed: {e}"))?;
 
         // LOAD from local cache if present; otherwise INSTALL then LOAD.
+        // Do not `SET custom_extension_repository = 'https://extensions.duckdb.org'`.
+        // That base makes DuckDB request `httpfs.duckdb_extension` without `.gz`
+        // (404). The default repository requests the `.gz` object, which exists.
         let load_result = bootstrap.execute_batch("LOAD motherduck;");
         if load_result.is_err() {
             bootstrap
-                .execute_batch(
-                    "SET custom_extension_repository = 'https://extensions.duckdb.org';
-                     INSTALL motherduck;
-                     LOAD motherduck;",
-                )
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to INSTALL/LOAD motherduck extension via HTTPS: {e}"
-                    )
-                })?;
+                .execute_batch(motherduck_extension_install_sql())
+                .map_err(|e| anyhow::anyhow!("failed to INSTALL/LOAD motherduck extension: {e}"))?;
         }
         drop(bootstrap);
 
-        duckdb::Connection::open(conn_str).map_err(|e| {
-            anyhow::anyhow!("motherduck open `{conn_str}` failed after LOAD: {e}")
-        })
+        duckdb::Connection::open(conn_str)
+            .map_err(|e| anyhow::anyhow!("motherduck open `{conn_str}` failed after LOAD: {e}"))
     }
 
     fn write_events_sync(&mut self, rows: &[EventRow]) -> anyhow::Result<usize> {
@@ -200,7 +194,9 @@ impl DuckDbSink {
         // that only emits decoded token records (or none).
         let mut antigravity_machines: Vec<String> = Vec::new();
         for row in rows {
-            if row.source == "antigravity" && !antigravity_machines.iter().any(|m| m == &row.machine_name) {
+            if row.source == "antigravity"
+                && !antigravity_machines.iter().any(|m| m == &row.machine_name)
+            {
                 antigravity_machines.push(row.machine_name.clone());
             }
         }
@@ -468,6 +464,24 @@ impl Default for DuckDbSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motherduck_install_keeps_the_gzip_extension_url() {
+        let sql = motherduck_extension_install_sql();
+        assert!(sql.contains("INSTALL httpfs"));
+        assert!(sql.contains("LOAD httpfs"));
+        assert!(sql.contains("INSTALL motherduck"));
+        assert!(sql.contains("LOAD motherduck"));
+        // `https://extensions.duckdb.org` as custom_extension_repository makes
+        // DuckDB request `httpfs.duckdb_extension` with no `.gz` suffix. That
+        // object 404s, so a cold cache never loads MotherDuck and every sink
+        // write fails. The default repository fetches the `.gz`.
+        assert!(
+            !sql.contains("custom_extension_repository"),
+            "custom repo override drops the .gz suffix: {sql}"
+        );
+        assert!(!sql.contains("https://extensions.duckdb.org"));
+    }
 
     #[test]
     fn motherduck_connection_string_appends_token() {
