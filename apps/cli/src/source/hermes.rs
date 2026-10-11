@@ -156,7 +156,9 @@ impl DataSource for HermesSource {
         let session_rows = stmt.query_map([since_seconds, end_seconds], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(1)?
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| "unknown".to_string()),
                 row_unix_ts(row, 2)?,
                 row_opt_unix_ts(row, 3)?,
                 row_i64_flex(row, 4)?,
@@ -170,9 +172,7 @@ impl DataSource for HermesSource {
             ))
         })?;
 
-        // Aggregate for daily events
-        // Key: date + '|' + model
-        let mut daily_sums: HashMap<String, (i64, i64, i64, i64, i64, f64, String)> = HashMap::new();
+        let mut daily_sums: HashMap<(String, String), DailySum> = HashMap::new();
 
         for session in session_rows {
             let (
@@ -225,16 +225,15 @@ impl DataSource for HermesSource {
                 output_tokens as u64,
             );
 
-            let daily_key = format!("{}|{}", date, model);
-            let entry = daily_sums.entry(daily_key).or_insert((0, 0, 0, 0, 0, 0.0, cwd.clone()));
-            entry.0 += input_tokens;
-            entry.1 += output_tokens;
-            entry.2 += cache_write_tokens;
-            entry.3 += cache_read_tokens;
-            entry.4 += reasoning_tokens;
-            entry.5 += cost;
-            if entry.6.is_empty() && !cwd.is_empty() {
-                entry.6 = cwd.clone();
+            let entry = daily_sums.entry((date.clone(), model.clone())).or_default();
+            entry.input += input_tokens;
+            entry.output += output_tokens;
+            entry.cache_write += cache_write_tokens;
+            entry.cache_read += cache_read_tokens;
+            entry.reasoning += reasoning_tokens;
+            entry.cost += cost;
+            if entry.cwd.is_empty() && !cwd.is_empty() {
+                entry.cwd = cwd.clone();
             }
 
             // Build session event row
@@ -290,16 +289,12 @@ impl DataSource for HermesSource {
         }
 
         // Build daily event rows
-        for (key, sum) in &daily_sums {
-            let (input, output, cache_creation, cache_read, reasoning, cost, ref cwd) = *sum;
-            let parts: Vec<&str> = key.split('|').collect();
-            if parts.len() < 2 {
-                continue;
-            }
-            let date = parts[0];
-            let model = parts[1];
-            let total = input + output + cache_read + cache_creation;
-            let hashed_proj = hash_project_name_sync(if cwd.is_empty() { "unknown" } else { cwd }, *hash_projects);
+        for ((date, model), sum) in &daily_sums {
+            let total = sum.input + sum.output + sum.cache_read + sum.cache_write;
+            let hashed_proj = hash_project_name_sync(
+                if sum.cwd.is_empty() { "unknown" } else { &sum.cwd },
+                *hash_projects,
+            );
 
             let raw_daily_key = format!(
                 "hermes|{}|daily|{}|{}|{}",
@@ -308,24 +303,24 @@ impl DataSource for HermesSource {
             let daily_dedup_key = make_dedup_key(&raw_daily_key);
 
             // Round daily sum to cents for stable display.
-            let cost = (cost * 100.0).round() / 100.0;
+            let cost = (sum.cost * 100.0).round() / 100.0;
 
             events.push(EventRow {
-                date: date.to_string(),
+                date: date.clone(),
                 record_type: "daily".to_string(),
-                record_key: date.to_string(),
+                record_key: date.clone(),
                 source: "hermes".to_string(),
                 machine_name: machine_name.to_string(),
                 account_id: String::new(),
                 api_key_id: String::new(),
-                model_name: model.to_string(),
+                model_name: model.clone(),
                 session_id: String::new(),
                 project_path: hashed_proj,
-                input_tokens: input as u64,
-                output_tokens: output as u64,
-                cache_creation_tokens: cache_creation as u64,
-                cache_read_tokens: cache_read as u64,
-                reasoning_tokens: reasoning as u64,
+                input_tokens: sum.input as u64,
+                output_tokens: sum.output as u64,
+                cache_creation_tokens: sum.cache_write as u64,
+                cache_read_tokens: sum.cache_read as u64,
+                reasoning_tokens: sum.reasoning as u64,
                 total_tokens: total as u64,
                 cost,
                 dedup_key: daily_dedup_key,
@@ -358,6 +353,17 @@ impl DataSource for HermesSource {
     }
 }
 
+#[derive(Default)]
+struct DailySum {
+    input: i64,
+    output: i64,
+    cache_write: i64,
+    cache_read: i64,
+    reasoning: i64,
+    cost: f64,
+    cwd: String,
+}
+
 /// Hermes `state.db` stores unix timestamps as REAL (float seconds).
 fn row_unix_ts(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<i64> {
     if let Ok(v) = row.get::<_, i64>(idx) {
@@ -375,6 +381,9 @@ fn row_opt_unix_ts(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<Option<i
 }
 
 fn row_i64_flex(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<i64> {
+    if row.get_ref(idx)?.data_type() == rusqlite::types::Type::Null {
+        return Ok(0);
+    }
     if let Ok(v) = row.get::<_, i64>(idx) {
         return Ok(v);
     }
@@ -456,6 +465,57 @@ mod tests {
         assert_eq!(sessions[0].cache_creation_tokens, 0);
         assert_eq!(sessions[0].total_tokens, 130);
         assert_eq!(sessions[0].date, "2025-08-10");
+    }
+
+    #[test]
+    fn fetch_tolerates_null_model_and_tokens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open(tmp.path().join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT, model TEXT, started_at REAL, ended_at REAL,
+                input_tokens REAL, output_tokens REAL,
+                cache_write_tokens REAL, cache_read_tokens REAL,
+                reasoning_tokens REAL, cwd TEXT,
+                estimated_cost_usd REAL, actual_cost_usd REAL
+            );
+            INSERT INTO sessions VALUES (
+                'empty', NULL, 1754784000, NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL
+            );
+            INSERT INTO sessions VALUES (
+                'no-model', NULL, 1754784000, 1754784060,
+                50, 5, NULL, NULL, NULL, '/w', NULL, NULL
+            );
+            INSERT INTO sessions VALUES (
+                'ok', 'google/gemini-2.5-flash', 1754784000, 1754784060,
+                100, 20, 0, 10, 5, '/w', 0.001, NULL
+            );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let src = HermesSource::new(HermesSourceOptions {
+            machine_name: "m1".into(),
+            hash_projects: false,
+            verbose: false,
+            days_back: None,
+            since: None,
+            end_date: None,
+            import_id: "t".into(),
+            base_dir: Some(tmp.path().to_path_buf()),
+        });
+        let result = futures::executor::block_on(async move { src.fetch().await }).unwrap();
+
+        let mut models: Vec<_> = result
+            .data
+            .events
+            .iter()
+            .filter(|e| e.record_type == "session")
+            .map(|e| (e.model_name.as_str(), e.total_tokens))
+            .collect();
+        models.sort();
+        assert_eq!(models, vec![("google/gemini-2.5-flash", 130), ("unknown", 55)]);
     }
 
     #[test]

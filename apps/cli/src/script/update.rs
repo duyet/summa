@@ -345,8 +345,12 @@ pub async fn run(args: UpdateArgs) -> anyhow::Result<()> {
             .map(|c| c.update_channel())
             .unwrap_or_default();
         if prev != ch {
-            crate::config::Config::set_value(&cfg_path, "update.channel", ch.as_str())?;
-            println!("update: channel set to {} ({})", ch.as_str(), cfg_path.display());
+            if args.dry_run {
+                println!("dry-run: would set channel to {} ({})", ch.as_str(), cfg_path.display());
+            } else {
+                crate::config::Config::set_value(&cfg_path, "update.channel", ch.as_str())?;
+                println!("update: channel set to {} ({})", ch.as_str(), cfg_path.display());
+            }
         }
         ch
     } else {
