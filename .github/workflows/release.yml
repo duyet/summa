@@ -172,7 +172,7 @@ jobs:
           VER="$(grep -m1 '^version' apps/cli/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
           TAG="v${VER}"
           echo "stable tag: ${TAG}"
-          COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '[.assets] | length' 2>/dev/null || echo 0)"
+          COUNT="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.assets | length' 2>/dev/null || echo 0)"
           if [ "${COUNT}" != "0" ]; then
             echo "already has ${COUNT} asset(s); skipping backfill"
             exit 0
