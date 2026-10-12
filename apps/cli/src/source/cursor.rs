@@ -15,8 +15,10 @@
  * Missing credentials skip this source (empty result, rest of import continues).
  *
  * Surface labels (`EventRow.source`):
- *   cursor | cursor-cloud-agent | cursor-api | cursor-grok-bot
- * Residual / unclassifiable events still import as `cursor`.
+ *   cursor | cursor-cloud-agent | cursor-api
+ * The Grok Bot chat surface is emitted by `source::grok_bot` (`grok-bot`), which
+ * reads these same events; see `Ownership`. Residual / unclassifiable events
+ * still import as `cursor`.
  */
 
 use std::collections::HashMap;
@@ -40,7 +42,10 @@ pub const CURSOR_ACCOUNT_MACHINE: &str = "account";
 pub const SOURCE_CURSOR: &str = "cursor";
 pub const SOURCE_CLOUD_AGENT: &str = "cursor-cloud-agent";
 pub const SOURCE_API: &str = "cursor-api";
-pub const SOURCE_GROK_BOT: &str = "cursor-grok-bot";
+/// Grok Bot (x.ai) chat rows. Written by `source::grok_bot`, not by this
+/// source: one usage event must have exactly one owner, and the dedup key
+/// contains the source, so emitting it twice would double-count it.
+pub const SOURCE_GROK_BOT: &str = "grok-bot";
 
 const DASHBOARD_EVENTS_URL: &str = "https://cursor.com/api/dashboard/get-filtered-usage-events";
 const ADMIN_EVENTS_URL: &str = "https://api.cursor.com/teams/filtered-usage-events";
@@ -302,6 +307,43 @@ pub fn map_cursor_events(
     end_date: Option<&str>,
     now: &str,
 ) -> Vec<EventRow> {
+    map_account_events(events, import_id, since, end_date, now, Ownership::Cursor)
+}
+
+/// Grok Bot chat rows out of the same events. Used by `source::grok_bot`.
+pub fn map_grok_bot_events(
+    events: &[CursorUsageEvent],
+    import_id: &str,
+    since: Option<&str>,
+    end_date: Option<&str>,
+    now: &str,
+) -> Vec<EventRow> {
+    map_account_events(events, import_id, since, end_date, now, Ownership::GrokBot)
+}
+
+/// Which side of the usage-event feed a mapper owns.
+///
+/// The Grok Bot chat surface is a product surface of its own, so it is written
+/// as `source = "grok-bot"` instead of a Cursor sub-label — but it is the same
+/// underlying event, and dedup keys embed the source, so exactly one mapper may
+/// claim it. Writing it from both sides would survive ReplacingMergeTree as two
+/// rows and count the same chat twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ownership {
+    /// Every surface except Grok Bot.
+    Cursor,
+    /// Only the Grok Bot chat surface.
+    GrokBot,
+}
+
+fn map_account_events(
+    events: &[CursorUsageEvent],
+    import_id: &str,
+    since: Option<&str>,
+    end_date: Option<&str>,
+    now: &str,
+    owner: Ownership,
+) -> Vec<EventRow> {
     let mut rows: Vec<EventRow> = Vec::new();
     // daily key: date|source|model
     struct DailyAgg {
@@ -339,6 +381,11 @@ pub fn map_cursor_events(
         }
 
         let source = classify_cursor_surface(event);
+        // Grok Bot events belong to `source::grok_bot`, so each event is
+        // written exactly once across the two mappers.
+        if (source == SOURCE_GROK_BOT) != matches!(owner, Ownership::GrokBot) {
+            continue;
+        }
         let model = event
             .model
             .as_deref()
@@ -521,6 +568,23 @@ impl DataSource for CursorSource {
 
 /// Resolve auth, fetch pages, map. Missing auth → empty Ok (not an error).
 pub async fn fetch_cursor_events(opts: &CursorSourceOptions) -> anyhow::Result<Vec<EventRow>> {
+    let raw = fetch_cursor_usage_events(opts).await?;
+    let now = ch_now();
+    Ok(map_cursor_events(
+        &raw,
+        &opts.import_id,
+        opts.since.as_deref(),
+        opts.end_date.as_deref(),
+        &now,
+    ))
+}
+
+/// Raw usage events only, no mapping. Shared with `source::grok_bot`, which
+/// maps the Grok Bot surface of the same events; the two sources therefore
+/// read one API response instead of fetching the account twice.
+pub async fn fetch_cursor_usage_events(
+    opts: &CursorSourceOptions,
+) -> anyhow::Result<Vec<CursorUsageEvent>> {
     let auth = resolve_cursor_auth(opts);
     let auth = match auth {
         Some(a) => a,
@@ -533,22 +597,14 @@ pub async fn fetch_cursor_events(opts: &CursorSourceOptions) -> anyhow::Result<V
     };
 
     let (since_ms, until_ms) = window_millis(opts.since.as_deref(), opts.days_back, opts.end_date.as_deref());
-    let raw = match auth {
+    match auth {
         CursorAuth::AdminApiKey(key) => {
-            fetch_admin_pages(&key, since_ms, until_ms, opts.verbose).await?
+            fetch_admin_pages(&key, since_ms, until_ms, opts.verbose).await
         }
         CursorAuth::Session(cookie) => {
-            fetch_dashboard_pages(&cookie, since_ms, until_ms, opts.verbose).await?
+            fetch_dashboard_pages(&cookie, since_ms, until_ms, opts.verbose).await
         }
-    };
-    let now = ch_now();
-    Ok(map_cursor_events(
-        &raw,
-        &opts.import_id,
-        opts.since.as_deref(),
-        opts.end_date.as_deref(),
-        &now,
-    ))
+    }
 }
 
 enum CursorAuth {
@@ -1106,17 +1162,26 @@ mod tests {
         rows.iter().filter(|e| e.record_type == "session").collect()
     }
 
+    /// The fixture's Grok Bot chat event, as `source::grok_bot` sees it.
+    fn grok_bot_event() -> CursorUsageEvent {
+        events_from_page_json(FIXTURE)
+            .expect("fixture must parse")
+            .into_iter()
+            .find(|e| e.conversation_id.as_deref() == Some("conv-grok"))
+            .expect("fixture has a grok bot event")
+    }
+
     #[test]
-    fn fixture_maps_four_surfaces_plus_residual() {
+    fn fixture_maps_three_surfaces_plus_residual() {
         let rows = map_cursor_events_json(FIXTURE, "import-test", None, None, "2026-08-19 00:00:00")
             .expect("fixture must parse");
         let sess = sessions(&rows);
-        assert_eq!(sess.len(), 5, "unclassifiable events still produce a row");
+        // The Grok Bot chat event is written by `source::grok_bot` instead.
+        assert_eq!(sess.len(), 4, "unclassifiable events still produce a row");
 
         let editor = sess.iter().find(|e| e.session_id == "conv-editor").unwrap();
         let cloud = sess.iter().find(|e| e.session_id == "conv-cloud").unwrap();
         let api = sess.iter().find(|e| e.session_id == "conv-api").unwrap();
-        let grok = sess.iter().find(|e| e.session_id == "conv-grok").unwrap();
         let residual = sess
             .iter()
             .find(|e| e.session_id.is_empty() && e.model_name == "unknown")
@@ -1125,14 +1190,14 @@ mod tests {
         assert_eq!(editor.source, SOURCE_CURSOR);
         assert_eq!(cloud.source, SOURCE_CLOUD_AGENT);
         assert_eq!(api.source, SOURCE_API);
-        assert_eq!(grok.source, SOURCE_GROK_BOT);
         assert_eq!(residual.source, SOURCE_CURSOR);
+        assert!(sess.iter().all(|e| e.source != SOURCE_GROK_BOT));
+        assert_eq!(classify_cursor_surface(&grok_bot_event()), SOURCE_GROK_BOT);
 
-        let sources: Vec<&str> = [editor, cloud, api, grok].iter().map(|e| e.source.as_str()).collect();
-        assert_eq!(sources.len(), 4);
-        for i in 0..4 {
-            for j in (i + 1)..4 {
-                assert_ne!(sources[i], sources[j], "four kinds must differ");
+        let sources: Vec<&str> = [editor, cloud, api, residual].iter().map(|e| e.source.as_str()).collect();
+        for i in 0..sources.len() {
+            for j in (i + 1)..sources.len() {
+                assert_ne!(sources[i], sources[j], "each kind must differ");
             }
         }
 
@@ -1147,8 +1212,6 @@ mod tests {
         assert!((cloud.cost - 0.05).abs() < 1e-9);
         assert_eq!(api.input_tokens, 80);
         assert!((api.cost - 0.02).abs() < 1e-9);
-        assert_eq!(grok.cache_read_tokens, 8);
-        assert!((grok.cost - 0.01).abs() < 1e-9);
         assert_eq!(residual.total_tokens, 0);
         assert!((residual.cost - 0.03).abs() < 1e-9);
 
@@ -1158,6 +1221,35 @@ mod tests {
             assert_eq!(row.dedup_key.len(), 16);
             assert!(!row.dedup_key.is_empty());
         }
+    }
+
+    /// Cursor and `source::grok_bot` read the same feed, so they must partition
+    /// it: every event is claimed once. Emitting the Grok Bot chat from both
+    /// sides would produce two dedup keys, and the sinks would keep both.
+    #[test]
+    fn cursor_and_grok_bot_claim_disjoint_events() {
+        let events = events_from_page_json(FIXTURE).expect("fixture must parse");
+        let now = "2026-08-19 00:00:00";
+        let cursor_rows = map_cursor_events(&events, "imp", None, None, now);
+        let bot_rows = map_grok_bot_events(&events, "imp", None, None, now);
+
+        let bot = sessions(&bot_rows);
+        assert_eq!(bot.len(), 1, "only the grok bot chat event: {bot:?}");
+        assert_eq!(bot[0].session_id, "conv-grok");
+        assert_eq!(bot[0].cache_read_tokens, 8);
+        assert!((bot[0].cost - 0.01).abs() < 1e-9);
+        assert_eq!(sessions(&cursor_rows).len(), 4);
+
+        let keys: std::collections::HashSet<_> = cursor_rows
+            .iter()
+            .chain(bot_rows.iter())
+            .map(|r| r.dedup_key.clone())
+            .collect();
+        assert_eq!(
+            keys.len(),
+            cursor_rows.len() + bot_rows.len(),
+            "a duplicate dedup key means the same event is imported twice"
+        );
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::source::devin::{DevinSource, DevinSourceOptions};
 use crate::source::fx::{FxSource, FxSourceOptions};
 use crate::source::grok::{GrokSource, GrokSourceOptions};
 use crate::source::grok_api::{GrokApiSource, GrokApiSourceOptions};
+use crate::source::grok_bot::{GrokBotSource, GrokBotSourceOptions};
 use crate::source::hermes::{HermesSource, HermesSourceOptions};
 use crate::source::pi::{PiSource, PiSourceOptions};
 use crate::util::date::resolve_effective_since;
@@ -345,6 +346,23 @@ pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
         })));
     }
 
+    // Grok Bot chat tokens ride on Cursor's account usage-events feed, but they
+    // are their own source id and their own flag: `--skip-grok` (Grok Build) and
+    // `--skip-cursor` must not decide whether Grok Bot chat is imported.
+    if !args.skip_grok_bot {
+        sources.push(Box::new(GrokBotSource::new(GrokBotSourceOptions {
+            verbose,
+            days_back,
+            since: effective_since.clone(),
+            end_date: end_date.clone(),
+            import_id: import_id.clone(),
+            session: None,
+            api_key: None,
+            state_db_path: None,
+            disable_local_auth: false,
+        })));
+    }
+
     if !args.skip_cursor {
         sources.push(Box::new(CursorSource::new(CursorSourceOptions {
             verbose,
@@ -468,6 +486,7 @@ pub fn apply_importer_skips(args: &mut ImportArgs, cfg: &crate::config::Importer
     args.skip_antigravity |= cfg.skip_antigravity.unwrap_or(false);
     args.skip_hermes |= cfg.skip_hermes.unwrap_or(false);
     args.skip_grok |= cfg.skip_grok.unwrap_or(false);
+    args.skip_grok_bot |= cfg.skip_grok_bot.unwrap_or(false);
     args.skip_devin |= cfg.skip_devin.unwrap_or(false);
     args.skip_cursor |= cfg.skip_cursor.unwrap_or(false);
     args.skip_pi |= cfg.skip_pi.unwrap_or(false);
@@ -501,6 +520,18 @@ pub fn enabled_source_ids(args: &ImportArgs) -> Vec<&'static str> {
     }
     if !args.skip_devin {
         ids.push("devin");
+    }
+    if !args.skip_command_code {
+        ids.push("command-code");
+    }
+    if !args.skip_pi {
+        ids.push("pi");
+    }
+    if !args.skip_fx {
+        ids.push("fx");
+    }
+    if !args.skip_grok_bot {
+        ids.push("grok-bot");
     }
     if !args.skip_cursor {
         ids.push("cursor");
@@ -552,6 +583,7 @@ mod tests {
             "grok",
             "devin",
             "cursor",
+            "grok-bot",
             "pi",
             "fx",
             "command-code",
@@ -699,6 +731,7 @@ motherduck_token = "md-from-credentials"
             skip_antigravity: true,
             skip_hermes: true,
             skip_grok: true,
+            skip_grok_bot: true,
             skip_devin: true,
             skip_cursor: true,
             skip_pi: true,
@@ -784,6 +817,7 @@ days_back = 30
             skip_antigravity: true,
             skip_hermes: true,
             skip_grok: true,
+            skip_grok_bot: true,
             skip_devin: true,
             skip_cursor: true,
             skip_pi: true,
@@ -816,6 +850,7 @@ days_back = 30
             skip_antigravity: true,
             skip_hermes: true,
             skip_grok: true,
+            skip_grok_bot: true,
             skip_devin: true,
             skip_cursor: true,
             skip_pi: true,
@@ -918,5 +953,110 @@ days_back = 30
         let ids = enabled_source_ids(&args);
         assert!(!ids.contains(&"devin"));
         assert!(ids.contains(&"grok"));
+    }
+
+    /// The coding-agent set every machine must import. Devin is a first-class
+    /// source here, not an opt-in: a machine that never sets `skip_devin` (or
+    /// `--skip-devin`) has to register it, otherwise Devin transcripts silently
+    /// stop reaching the hub.
+    #[test]
+    fn default_import_registers_every_coding_agent_source() {
+        let cli = Cli::try_parse_from(["summa", "import"]).expect("default import must parse");
+        let ids = match cli.command {
+            Commands::Import(args) => {
+                assert!(!args.skip_devin, "devin must not be skipped by default");
+                enabled_source_ids(&args)
+            }
+            _ => panic!("expected Import"),
+        };
+        for expected in [
+            "opencode",
+            "codex",
+            "antigravity",
+            "hermes",
+            "grok",
+            "grok-api",
+            "grok-bot",
+            "devin",
+            "cursor",
+            "pi",
+            "fx",
+            "command-code",
+        ] {
+            assert!(ids.contains(&expected), "{expected} must be enabled: {ids:?}");
+        }
+    }
+
+    #[test]
+    fn default_import_registers_grok_bot() {
+        let cli = Cli::try_parse_from(["summa", "import"]).expect("default import must parse");
+        match cli.command {
+            Commands::Import(args) => {
+                assert!(
+                    !args.skip_grok_bot,
+                    "grok-bot must be on by default (it has no fabricated rows)"
+                );
+                let ids = enabled_source_ids(&args);
+                assert!(ids.contains(&"grok-bot"), "grok-bot must register: {ids:?}");
+            }
+            _ => panic!("expected Import"),
+        }
+    }
+
+    /// `--skip-grok` is Grok Build (local logs + grok-api billing). Disabling it
+    /// must not silently stop Grok Bot chat tokens, or vice versa.
+    #[test]
+    fn skip_grok_and_skip_grok_bot_are_independent() {
+        let mut only_grok = skip_all_import_args();
+        only_grok.skip_grok = false;
+        only_grok.skip_grok_bot = false;
+        let ids = enabled_source_ids(&only_grok);
+        assert!(ids.contains(&"grok"));
+        assert!(ids.contains(&"grok-api"));
+        assert!(ids.contains(&"grok-bot"));
+
+        let mut only_bot = skip_all_import_args();
+        only_bot.skip_grok_bot = false;
+        let ids = enabled_source_ids(&only_bot);
+        assert!(!ids.contains(&"grok"));
+        assert!(!ids.contains(&"grok-api"));
+        assert!(ids.contains(&"grok-bot"));
+    }
+
+    /// Grok Bot rows live on Cursor's account feed, so `--skip-cursor` must not
+    /// take Grok Bot chat tokens down with it.
+    #[test]
+    fn skip_cursor_does_not_disable_grok_bot() {
+        let mut args = skip_all_import_args();
+        args.skip_grok_bot = false;
+        args.skip_cursor = true;
+        let ids = enabled_source_ids(&args);
+        assert!(!ids.contains(&"cursor"));
+        assert!(ids.contains(&"grok-bot"));
+    }
+
+    #[test]
+    fn clap_and_config_skip_grok_bot() {
+        let cli = Cli::try_parse_from(["summa", "import", "--skip-grok-bot"]).unwrap();
+        match cli.command {
+            Commands::Import(args) => {
+                assert!(args.skip_grok_bot);
+                let ids = enabled_source_ids(&args);
+                assert!(!ids.contains(&"grok-bot"));
+                assert!(ids.contains(&"grok"), "Grok Build stays on");
+                assert!(ids.contains(&"cursor"), "cursor stays on");
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+
+        let mut args = skip_all_import_args();
+        args.skip_grok_bot = false;
+        let cfg = crate::config::ImporterConfig {
+            skip_grok_bot: Some(true),
+            ..Default::default()
+        };
+        apply_importer_skips(&mut args, &cfg);
+        let ids = enabled_source_ids(&args);
+        assert!(!ids.contains(&"grok-bot"));
     }
 }
