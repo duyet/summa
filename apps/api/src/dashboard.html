@@ -516,7 +516,7 @@
 
       <div class="prose">
         <p>summa (Latin: sum, total) is a small Rust CLI. It reads agent logs locally, explodes model breakdowns into rows, dedups by key, and writes one table: <code>ccusage_events</code>. Monthly rollups are just SQL — <code>toYYYYMM(date)</code>.</p>
-        <p>This host is the cloud hub: machines POST with a token, the worker stamps the tenant, and usage lands in ClickHouse and MotherDuck. The analytics product of that pipeline is <a href="https://burn.duyet.net">burn.duyet.net</a>. D1 stores keys only.</p>
+        <p>This host is the cloud hub: machines POST with a token, the worker stamps the tenant, and usage lands in MotherDuck, ClickHouse, and the D1 daily-row mirror. The analytics product of that pipeline is <a href="https://burn.duyet.net">burn.duyet.net</a>. D1 stores keys and mirrors daily rows for analytics fallback.</p>
       </div>
 
       <div class="rule" aria-hidden="true">* * *</div>

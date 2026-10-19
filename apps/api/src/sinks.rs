@@ -25,6 +25,10 @@ pub fn motherduck_configured(env: &Env) -> bool {
     !opt_secret(env, "MOTHERDUCK_TOKEN").is_empty()
 }
 
+pub fn d1_configured(env: &Env) -> bool {
+    env.d1("DB").is_ok()
+}
+
 pub async fn fanout_write(env: &Env, rows: &[EventRow]) -> Vec<SinkAck> {
     let mut out = Vec::new();
     if clickhouse_configured(env) {
@@ -32,6 +36,9 @@ pub async fn fanout_write(env: &Env, rows: &[EventRow]) -> Vec<SinkAck> {
     }
     if motherduck_configured(env) {
         out.push(write_motherduck(env, rows).await);
+    }
+    if d1_configured(env) {
+        out.push(write_d1(env, rows).await);
     }
     out
 }
@@ -43,6 +50,9 @@ pub async fn collect_pings(env: &Env) -> Vec<PingSample> {
     }
     if motherduck_configured(env) {
         out.push(timed("motherduck", ping_motherduck(env)).await);
+    }
+    if d1_configured(env) {
+        out.push(timed("d1", ping_d1(env)).await);
     }
     out
 }
@@ -75,6 +85,114 @@ async fn ping_clickhouse(env: &Env) -> std::result::Result<(), String> {
 async fn ping_motherduck(env: &Env) -> std::result::Result<(), String> {
     motherduck_query(env, "SELECT 1").await.map(|_| ())
 }
+
+async fn ping_d1(env: &Env) -> std::result::Result<(), String> {
+    d1_query(env, "SELECT 1 AS ok").await.map(|_| ())
+}
+
+/// D1 read mirror query; the parsed rows land in `D1Result::results`.
+pub async fn d1_query(env: &Env, sql: &str) -> std::result::Result<String, String> {
+    let db = env.d1("DB").map_err(|e| e.to_string())?;
+    let rows: Vec<serde_json::Value> = db
+        .prepare(sql)
+        .all()
+        .await
+        .map_err(|e| e.to_string())?
+        .results()
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&rows).map_err(|e| e.to_string())
+}
+
+/// Write the `daily` rows into the D1 read mirror. Upserts only — no deletes —
+/// so a corrected re-import overwrites its `dedup_key` in place and a tunnel
+/// outage on another sink can never cascade into D1.
+async fn write_d1(env: &Env, rows: &[EventRow]) -> SinkAck {
+    let start = now_ms();
+    let daily: Vec<&EventRow> = rows.iter().filter(|r| r.record_type == "daily").collect();
+    if daily.is_empty() {
+        return ack("d1", 0, start, None);
+    }
+    let account_id = rows.first().map(|r| r.account_id.as_str()).unwrap_or("");
+    if account_id.is_empty() {
+        return ack("d1", 0, start, Some("missing account_id".into()));
+    }
+    let db = match env.d1("DB") {
+        Ok(db) => db,
+        Err(e) => return ack("d1", 0, start, Some(e.to_string())),
+    };
+    let mut stmts = Vec::new();
+    stmts.push(db.prepare(D1_CREATE_TABLE));
+    stmts.push(db.prepare(D1_CREATE_INDEX));
+    for chunk in daily.chunks(200) {
+        stmts.push(db.prepare(&d1_insert_sql(chunk)));
+    }
+    match db.batch(stmts).await {
+        Ok(_) => ack("d1", daily.len() as u64, start, None),
+        Err(e) => ack("d1", 0, start, Some(e.to_string())),
+    }
+}
+
+const D1_CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS ccusage_events (\
+  dedup_key TEXT PRIMARY KEY, account_id TEXT NOT NULL DEFAULT '', api_key_id TEXT NOT NULL DEFAULT '', \
+  date TEXT NOT NULL, record_type TEXT NOT NULL DEFAULT 'daily', source TEXT NOT NULL DEFAULT '', \
+  machine_name TEXT NOT NULL DEFAULT '', model_name TEXT NOT NULL DEFAULT '', \
+  input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, \
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, \
+  reasoning_tokens INTEGER NOT NULL DEFAULT 0, total_tokens INTEGER NOT NULL DEFAULT 0, \
+  cost REAL NOT NULL DEFAULT 0, entries INTEGER NOT NULL DEFAULT 0, \
+  import_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''";
+const D1_CREATE_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS ccusage_events_acct_date ON ccusage_events (account_id, date, record_type)";
+
+const D1_EVENT_COLS: &str = "dedup_key, account_id, api_key_id, date, record_type, source, \
+machine_name, model_name, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
+reasoning_tokens, total_tokens, cost, entries, import_id, created_at, updated_at";
+
+/// One batched upsert statement covering `rows`. Conflicts on `dedup_key`
+/// refresh every stored column, mirroring the delete+insert of the other sinks.
+pub fn d1_insert_sql(rows: &[&EventRow]) -> String {
+    let values = rows
+        .iter()
+        .map(|r| d1_event_values_sql(r))
+        .collect::<Vec<_>>()
+        .join(",");
+    let updates: Vec<String> = D1_EVENT_COLS
+        .split(", ")
+        .filter(|col| *col != "dedup_key")
+        .map(|col| format!("{col}=excluded.{col}"))
+        .collect();
+    format!(
+        "INSERT INTO ccusage_events ({D1_EVENT_COLS}) VALUES {values} \
+         ON CONFLICT (dedup_key) DO UPDATE SET {}",
+        updates.join(", ")
+    )
+}
+
+fn d1_event_values_sql(row: &EventRow) -> String {
+    format!(
+        "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+        sql_literal(&row.dedup_key),
+        sql_literal(&row.account_id),
+        sql_literal(&row.api_key_id),
+        sql_literal(&row.date),
+        sql_literal(&row.record_type),
+        sql_literal(&row.source),
+        sql_literal(&row.machine_name),
+        sql_literal(&row.model_name),
+        row.input_tokens,
+        row.output_tokens,
+        row.cache_creation_tokens,
+        row.cache_read_tokens,
+        row.reasoning_tokens,
+        row.total_tokens,
+        sql_f64(row.cost),
+        row.entries,
+        sql_literal(&row.import_id),
+        sql_literal(&row.created_at),
+        sql_literal(&row.updated_at),
+    )
+}
+
 
 async fn write_clickhouse(env: &Env, rows: &[EventRow]) -> SinkAck {
     let start = now_ms();
@@ -695,6 +813,7 @@ pub fn parse_json_each_row(text: &str) -> Vec<AnalyticsPoint> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analytics::{d1_usage_select_sql, usage_select_sql};
 
     fn sample_row() -> EventRow {
         EventRow {
@@ -851,5 +970,32 @@ mod tests {
         assert!(!clickhouse_access_configured("", "s"));
         assert!(!clickhouse_access_configured("id", ""));
         assert!(clickhouse_access_configured("id", "s"));
+    }
+
+    #[test]
+    fn d1_insert_upserts_all_non_key_columns() {
+        let row = sample_row();
+        let sql = d1_insert_sql(&[&row]);
+        assert!(sql.starts_with("INSERT INTO ccusage_events (dedup_key"));
+        assert!(sql.contains("'deadbeef'"));
+        assert!(sql.contains("ON CONFLICT (dedup_key) DO UPDATE SET"));
+        assert!(sql.contains("cost=excluded.cost"), "got {sql}");
+        assert!(!sql.contains("dedup_key=excluded.dedup_key"));
+    }
+
+    #[test]
+    fn d1_select_matches_usage_grain() {
+        let d1 = d1_usage_select_sql("source", "acc", false, "2026-01-01", "2026-01-10");
+        assert!(d1.starts_with("SELECT date, source,"));
+        assert!(d1.contains("account_id = 'acc'"));
+        assert!(!d1.contains("FINAL"));
+        assert!(!d1.contains("FORMAT"));
+
+        let ch = usage_select_sql("source", "acc", false, "2026-01-01", "2026-01-10", true);
+        assert!(ch.contains(" FINAL"));
+        assert!(ch.ends_with("FORMAT JSONEachRow"));
+        let md = usage_select_sql("source", "acc", false, "2026-01-01", "2026-01-10", false);
+        assert!(!md.contains("FINAL"));
+        assert_eq!(md, d1);
     }
 }

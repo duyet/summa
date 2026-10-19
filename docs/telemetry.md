@@ -4,7 +4,7 @@ The hub is a **Cloudflare Worker**, not a local `summa serve`. Every `summa` bin
 
 Existing rows keep empty `account_id`. Analytics for the **first/owner** tenant includes `account_id IN (theirs, '')` so current data still shows; other tenants only see their own `account_id`. `GET /v1/analytics` uses ClickHouse when reachable and falls back to MotherDuck (MCP SQL at `https://api.motherduck.com/mcp`). Worker `CH_HOST` is the tunnel hostname `clickhouse-homelab.duyet.net` (HTTPS) plus Cloudflare Access service-token headers (`CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`). Sync local keys with `bash scripts/sync-worker-secrets.sh`.
 
-Worker deploy, D1 (API keys/accounts only), and secrets: `apps/api/README.md`. Usage data: ClickHouse + MotherDuck. Creds: `.env.example` at repo root.
+Worker deploy, D1 (keys/accounts + daily-row analytics mirror), and secrets: `apps/api/README.md`. Usage data: ClickHouse + MotherDuck; analytics reads MotherDuck → D1 → ClickHouse; mirror (re)fill via `summa d1-sync`. Creds: `.env.example` at repo root.
 
 `summa serve` only pings this hub (deprecated local HTTP). k3s/Hermes: `docs/k3s.md` — run **import**, not a local server. Sidebar iframe: https://summa.duyet.net.
 

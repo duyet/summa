@@ -2,8 +2,8 @@ use chrono::{Duration, Utc};
 use worker::{Env, Result};
 
 use crate::sinks::{
-    clickhouse_configured, clickhouse_query, motherduck_configured, motherduck_query,
-    parse_analytics_payload,
+    clickhouse_configured, clickhouse_query, d1_configured, d1_query, motherduck_configured,
+    motherduck_query, parse_analytics_payload,
 };
 use crate::types::{AnalyticsPoint, MAX_ANALYTICS_DAYS};
 
@@ -90,6 +90,40 @@ pub fn usage_select_sql(
     until: &str,
     use_final: bool,
 ) -> String {
+    let mut sql = usage_select_core(
+        group,
+        account_id,
+        include_legacy,
+        since,
+        until,
+        if use_final { " FINAL" } else { "" },
+    );
+    if use_final {
+        sql.push_str(" FORMAT JSONEachRow");
+    }
+    sql
+}
+
+/// D1 read mirror select: plain SQLite dialect (no FINAL, no FORMAT) — the
+/// table only holds `daily` rows refreshed by upsert, so nothing to collapse.
+pub fn d1_usage_select_sql(
+    group: &str,
+    account_id: &str,
+    include_legacy: bool,
+    since: &str,
+    until: &str,
+) -> String {
+    usage_select_core(group, account_id, include_legacy, since, until, "")
+}
+
+fn usage_select_core(
+    group: &str,
+    account_id: &str,
+    include_legacy: bool,
+    since: &str,
+    until: &str,
+    select_suffix: &str,
+) -> String {
     let extra = if group == "model" {
         "source, model_name"
     } else {
@@ -115,11 +149,7 @@ pub fn usage_select_sql(
          FROM ccusage_events"
     );
     let tail = format!(" WHERE {where_sql} GROUP BY {group_by} ORDER BY date, source");
-    if use_final {
-        format!("{select} FINAL{tail} FORMAT JSONEachRow")
-    } else {
-        format!("{select}{tail}")
-    }
+    format!("{select}{select_suffix}{tail}")
 }
 
 pub async fn load_points(
@@ -131,18 +161,27 @@ pub async fn load_points(
     until: &str,
 ) -> Result<Vec<AnalyticsPoint>> {
     let mut errors = Vec::new();
-    if clickhouse_configured(env) {
-        let sql = usage_select_sql(group, account_id, include_legacy, since, until, true);
-        match clickhouse_query(env, &sql).await {
-            Ok(text) => return Ok(parse_analytics_payload(&text)),
-            Err(e) => errors.push(format!("clickhouse: {e}")),
-        }
-    }
+    // MotherDuck primary; D1 mirror next; ClickHouse (homelab, behind a flaky
+    // tunnel) is a backup read path only.
     if motherduck_configured(env) {
         let sql = usage_select_sql(group, account_id, include_legacy, since, until, false);
         match motherduck_query(env, &sql).await {
             Ok(text) => return Ok(parse_analytics_payload(&text)),
             Err(e) => errors.push(format!("motherduck: {e}")),
+        }
+    }
+    if d1_configured(env) {
+        let sql = d1_usage_select_sql(group, account_id, include_legacy, since, until);
+        match d1_query(env, &sql).await {
+            Ok(text) => return Ok(parse_analytics_payload(&text)),
+            Err(e) => errors.push(format!("d1: {e}")),
+        }
+    }
+    if clickhouse_configured(env) {
+        let sql = usage_select_sql(group, account_id, include_legacy, since, until, true);
+        match clickhouse_query(env, &sql).await {
+            Ok(text) => return Ok(parse_analytics_payload(&text)),
+            Err(e) => errors.push(format!("clickhouse: {e}")),
         }
     }
     if errors.is_empty() {
