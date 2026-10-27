@@ -5,16 +5,15 @@
  * Extracts exact token counts, cache read/write, reasoning tokens, and costs.
  */
 
-use rusqlite::Connection;
 use std::collections::HashMap;
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 
 use crate::model::{DataSource, EventRow, EventsSnapshotData, SourceResult};
 use crate::util::date::ch_now;
 use crate::util::hash::{hash_project_name_sync, make_dedup_key};
 use crate::util::pricing::resolve_reported_cost;
+use crate::util::sqlite::SqliteSnapshot;
 use async_trait::async_trait;
 
 // ---------------------------------------------------------------------------
@@ -113,22 +112,8 @@ impl DataSource for HermesSource {
         }
 
         // Copy DB to temp dir for safe read-only access
-        let temp_dir = temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-        let temp_db = temp_dir.join(format!("hermes-{}.db", uuid::Uuid::new_v4()));
-        let temp_wal = temp_dir.join(format!("hermes-{}.db-wal", uuid::Uuid::new_v4()));
-        let temp_shm = temp_dir.join(format!("hermes-{}.db-shm", uuid::Uuid::new_v4()));
-
-        fs::copy(&db_path, &temp_db)?;
-        let wal_path = db_path.with_extension("db-wal");
-        let shm_path = db_path.with_extension("db-shm");
-        if wal_path.exists() {
-            let _ = fs::copy(&wal_path, &temp_wal);
-        }
-        if shm_path.exists() {
-            let _ = fs::copy(&shm_path, &temp_shm);
-        }
-
-        let conn = Connection::open(&temp_db)?;
+        let snapshot = SqliteSnapshot::open(&db_path, temp_dir.as_deref())?;
+        let conn = &snapshot.conn;
 
         // Determine date boundaries in seconds since Unix epoch
         let since_seconds: i64 = if let Some(ref eff) = effective_since {
@@ -401,6 +386,7 @@ fn row_i64_flex(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::Path;
 
     #[test]

@@ -13,6 +13,7 @@ use crate::model::{DataSource, EventRow, EventsSnapshotData, SourceResult};
 use crate::util::date::ch_now;
 use crate::util::hash::{hash_project_name_sync, make_dedup_key};
 use crate::util::pricing::estimate_model_cost;
+use crate::util::sqlite::SqliteSnapshot;
 use async_trait::async_trait;
 
 // ---------------------------------------------------------------------------
@@ -348,22 +349,9 @@ impl DataSource for AntigravitySource {
             let cid = file.trim_end_matches(".db").to_string();
             let workspace = projects_map.get(&cid).cloned().unwrap_or_else(|| cid.clone());
 
-            let temp_dir = temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-            let temp_db = temp_dir.join(format!("{}-{}.db", cid, uuid::Uuid::new_v4()));
-
             let result: anyhow::Result<()> = (|| {
-                fs::copy(&db_path, &temp_db)?;
-                let wal_path = db_path.with_extension("db-wal");
-                let shm_path = db_path.with_extension("db-shm");
-                if wal_path.exists() {
-                    fs::copy(&wal_path, temp_dir.join(format!("{}-{}.db-wal", cid, uuid::Uuid::new_v4())))?;
-                }
-                if shm_path.exists() {
-                    fs::copy(&shm_path, temp_dir.join(format!("{}-{}.db-shm", cid, uuid::Uuid::new_v4())))?;
-                }
-
-                let _conn = rusqlite::Connection::open(&temp_db)?;
-                let mut stmt = _conn.prepare("SELECT data FROM gen_metadata")?;
+                let snapshot = SqliteSnapshot::open(&db_path, temp_dir.as_deref())?;
+                let mut stmt = snapshot.conn.prepare("SELECT data FROM gen_metadata")?;
                 let rows = stmt.query_map([], |row| {
                     let data: Vec<u8> = row.get(0)?;
                     Ok(data)
@@ -410,7 +398,6 @@ impl DataSource for AntigravitySource {
             })();
 
             let _ = result;
-            let _ = fs::remove_file(&temp_db);
         }
 
         // Build SQLite daily rows
