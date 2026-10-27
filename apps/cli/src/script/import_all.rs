@@ -258,6 +258,7 @@ pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
             end_date: end_date.clone(),
             import_id: import_id.clone(),
             cli_dir: None,
+            temp_dir: None,
         })));
     }
 
@@ -271,6 +272,7 @@ pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
             end_date: end_date.clone(),
             import_id: import_id.clone(),
             base_dir: None,
+            temp_dir: None,
         })));
     }
 

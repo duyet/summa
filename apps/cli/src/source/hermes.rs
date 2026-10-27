@@ -32,6 +32,8 @@ pub struct HermesSourceOptions {
     pub import_id: String,
     /// Override Hermes home (tests). When None, uses `HERMES_HOME` or `~/.hermes`.
     pub base_dir: Option<PathBuf>,
+    /// Override where the per-run DB copy goes (tests). When None, uses the system temp dir.
+    pub temp_dir: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +70,7 @@ impl DataSource for HermesSource {
             end_date,
             import_id,
             base_dir,
+            temp_dir,
         } = &self.opts;
 
         let effective_since = if let Some(s) = since {
@@ -110,7 +113,7 @@ impl DataSource for HermesSource {
         }
 
         // Copy DB to temp dir for safe read-only access
-        let temp_dir = std::env::temp_dir();
+        let temp_dir = temp_dir.clone().unwrap_or_else(std::env::temp_dir);
         let temp_db = temp_dir.join(format!("hermes-{}.db", uuid::Uuid::new_v4()));
         let temp_wal = temp_dir.join(format!("hermes-{}.db-wal", uuid::Uuid::new_v4()));
         let temp_shm = temp_dir.join(format!("hermes-{}.db-shm", uuid::Uuid::new_v4()));
@@ -398,6 +401,7 @@ fn row_i64_flex(row: &rusqlite::Row, idx: usize) -> rusqlite::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_name() {
@@ -410,6 +414,7 @@ mod tests {
             end_date: None,
             import_id: "".into(),
             base_dir: None,
+            temp_dir: None,
         });
         assert_eq!(src.name(), "hermes");
     }
@@ -446,6 +451,7 @@ mod tests {
             end_date: None,
             import_id: "test-import".into(),
             base_dir: Some(tmp.path().to_path_buf()),
+            temp_dir: None,
         });
         let result = futures::executor::block_on(async move { src.fetch().await }).unwrap();
 
@@ -504,6 +510,7 @@ mod tests {
             end_date: None,
             import_id: "t".into(),
             base_dir: Some(tmp.path().to_path_buf()),
+            temp_dir: None,
         });
         let result = futures::executor::block_on(async move { src.fetch().await }).unwrap();
 
@@ -530,6 +537,7 @@ mod tests {
             end_date: None,
             import_id: "".into(),
             base_dir: Some(tmp.path().join("missing-hermes")),
+            temp_dir: None,
         });
         let result = futures::executor::block_on(async move { src.fetch().await });
 
@@ -537,5 +545,78 @@ mod tests {
         let r = result.unwrap();
         assert_eq!(r.source_name, "hermes");
         assert!(r.data.events.is_empty());
+    }
+
+    /// A live Hermes `state.db`: the table is checkpointed into the main file,
+    /// the session row sits only in the WAL, and the writer stays open.
+    fn state_db_with_row_in_wal(dir: &Path) -> rusqlite::Connection {
+        let writer = rusqlite::Connection::open(dir.join("state.db")).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                CREATE TABLE sessions (
+                    id TEXT, model TEXT, started_at REAL, ended_at REAL,
+                    input_tokens REAL, output_tokens REAL,
+                    cache_write_tokens REAL, cache_read_tokens REAL,
+                    reasoning_tokens REAL, cwd TEXT,
+                    estimated_cost_usd REAL, actual_cost_usd REAL
+                );
+                PRAGMA wal_checkpoint(TRUNCATE);
+                INSERT INTO sessions VALUES (
+                    'in-wal', 'google/gemini-2.5-flash', 1754784000, 1754784060,
+                    100, 20, 0, 10, 5, '/w', 0.001, NULL
+                );",
+            )
+            .unwrap();
+        assert!(dir.join("state.db-wal").exists());
+        writer
+    }
+
+    fn fetch_with_temp_dir(base_dir: &Path, temp_dir: &Path) -> SourceResult {
+        let src = HermesSource::new(HermesSourceOptions {
+            machine_name: "m1".into(),
+            hash_projects: false,
+            verbose: false,
+            days_back: None,
+            since: None,
+            end_date: None,
+            import_id: "t".into(),
+            base_dir: Some(base_dir.to_path_buf()),
+            temp_dir: Some(temp_dir.to_path_buf()),
+        });
+        futures::executor::block_on(async move { src.fetch().await }).unwrap()
+    }
+
+    #[test]
+    fn fetch_reads_rows_still_in_the_wal() {
+        let home = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let _writer = state_db_with_row_in_wal(home.path());
+
+        let result = fetch_with_temp_dir(home.path(), scratch.path());
+
+        let sessions: Vec<_> = result
+            .data
+            .events
+            .iter()
+            .filter(|e| e.record_type == "session")
+            .map(|e| e.total_tokens)
+            .collect();
+        assert_eq!(sessions, vec![130], "the WAL-only session was not read");
+    }
+
+    #[test]
+    fn fetch_leaves_no_files_in_temp_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let _writer = state_db_with_row_in_wal(home.path());
+
+        fetch_with_temp_dir(home.path(), scratch.path());
+
+        let left: Vec<_> = fs::read_dir(scratch.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "DB copies left behind: {left:?}");
     }
 }
