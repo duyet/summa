@@ -139,9 +139,12 @@ pub struct ImportArgs {
     /// Skip Hermes source
     #[arg(long)]
     pub skip_hermes: bool,
-    /// Skip Grok Build source
+    /// Skip Grok Build source (local logs + grok-api billing)
     #[arg(long)]
     pub skip_grok: bool,
+    /// Skip Grok Bot chat token source (independent of --skip-grok)
+    #[arg(long)]
+    pub skip_grok_bot: bool,
     /// Skip Devin CLI source
     #[arg(long)]
     pub skip_devin: bool,
@@ -230,6 +233,7 @@ mod tests {
             skip_antigravity: false,
             skip_hermes: false,
             skip_grok: false,
+            skip_grok_bot: false,
             skip_devin: false,
             skip_cursor: false,
             skip_command_code: false,
@@ -330,6 +334,22 @@ mod tests {
         let cli = Cli::try_parse_from(["summa", "import", "--skip-devin"]).unwrap();
         match cli.command {
             Commands::Import(args) => assert!(args.skip_devin),
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clap_accepts_skip_grok_bot_independently() {
+        let cli = Cli::try_parse_from(["summa", "import", "--skip-grok-bot"]).unwrap();
+        match cli.command {
+            Commands::Import(args) => {
+                assert!(args.skip_grok_bot);
+                assert!(
+                    !args.skip_grok,
+                    "skipping Grok Bot chat must not skip Grok Build"
+                );
+                assert!(!args.skip_cursor, "and must not skip Cursor");
+            }
             other => panic!("expected Import, got {other:?}"),
         }
     }
