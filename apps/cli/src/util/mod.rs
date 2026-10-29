@@ -10,6 +10,7 @@ pub mod logger;
 pub mod pricing;
 pub mod retry;
 pub mod sql;
+pub mod sqlite;
 pub mod timer;
 pub mod tokens;
 
@@ -21,5 +22,6 @@ pub use logger::{create_logger, Logger};
 pub use pricing::{estimate_model_cost, rates_for_model, resolve_reported_cost};
 pub use retry::{retry, retry_with_options, RetryOptions};
 pub use sql::escape_sql_literal;
+pub use sqlite::SqliteSnapshot;
 pub use timer::with_timeout;
 pub use tokens::total_tokens;

@@ -13,6 +13,7 @@ use crate::model::{DataSource, EventRow, EventsSnapshotData, SourceResult};
 use crate::util::date::ch_now;
 use crate::util::hash::{hash_project_name_sync, make_dedup_key};
 use crate::util::pricing::estimate_model_cost;
+use crate::util::sqlite::SqliteSnapshot;
 use async_trait::async_trait;
 
 // ---------------------------------------------------------------------------
@@ -221,6 +222,8 @@ pub struct AntigravitySourceOptions {
     pub import_id: String,
     /// Override Antigravity CLI dir (tests). When None, uses `~/.gemini/antigravity-cli`.
     pub cli_dir: Option<PathBuf>,
+    /// Override where the per-run DB copies go (tests). When None, uses the system temp dir.
+    pub temp_dir: Option<PathBuf>,
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +260,7 @@ impl DataSource for AntigravitySource {
             end_date,
             import_id,
             cli_dir,
+            temp_dir,
         } = &self.opts;
 
         let effective_since = if let Some(s) = since {
@@ -345,22 +349,9 @@ impl DataSource for AntigravitySource {
             let cid = file.trim_end_matches(".db").to_string();
             let workspace = projects_map.get(&cid).cloned().unwrap_or_else(|| cid.clone());
 
-            let temp_dir = std::env::temp_dir();
-            let temp_db = temp_dir.join(format!("{}-{}.db", cid, uuid::Uuid::new_v4()));
-
             let result: anyhow::Result<()> = (|| {
-                fs::copy(&db_path, &temp_db)?;
-                let wal_path = db_path.with_extension("db-wal");
-                let shm_path = db_path.with_extension("db-shm");
-                if wal_path.exists() {
-                    fs::copy(&wal_path, temp_dir.join(format!("{}-{}.db-wal", cid, uuid::Uuid::new_v4())))?;
-                }
-                if shm_path.exists() {
-                    fs::copy(&shm_path, temp_dir.join(format!("{}-{}.db-shm", cid, uuid::Uuid::new_v4())))?;
-                }
-
-                let _conn = rusqlite::Connection::open(&temp_db)?;
-                let mut stmt = _conn.prepare("SELECT data FROM gen_metadata")?;
+                let snapshot = SqliteSnapshot::open(&db_path, temp_dir.as_deref())?;
+                let mut stmt = snapshot.conn.prepare("SELECT data FROM gen_metadata")?;
                 let rows = stmt.query_map([], |row| {
                     let data: Vec<u8> = row.get(0)?;
                     Ok(data)
@@ -407,7 +398,6 @@ impl DataSource for AntigravitySource {
             })();
 
             let _ = result;
-            let _ = fs::remove_file(&temp_db);
         }
 
         // Build SQLite daily rows
@@ -548,6 +538,7 @@ fn make_antigravity_row(
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn opts_for(cli_dir: PathBuf) -> AntigravitySourceOptions {
@@ -560,6 +551,7 @@ mod tests {
             end_date: None,
             import_id: "test-import".into(),
             cli_dir: Some(cli_dir),
+            temp_dir: None,
         }
     }
 
@@ -686,6 +678,69 @@ mod tests {
         // 1M * $1.50 + 10M * $0.15 + 0.1M * $9 = $1.50 + $1.50 + $0.90
         assert!((daily[0].cost - 3.90).abs() < 0.001);
         assert!(r.data.events.iter().any(|e| e.record_type == "session"));
+    }
+
+    /// A live conversation DB: the table is checkpointed into the main file,
+    /// the token record sits only in the WAL, and the writer stays open.
+    fn conversation_db_with_record_in_wal(conv: &Path) -> rusqlite::Connection {
+        let writer = rusqlite::Connection::open(conv.join("cid-live.db")).unwrap();
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
+                CREATE TABLE gen_metadata (data BLOB);
+                PRAGMA wal_checkpoint(TRUNCATE);",
+            )
+            .unwrap();
+        // 2026-06-15T00:00:00Z
+        let blob = real_token_blob(1_000, 2_000, 300, 1_781_481_600, "gemini-3.5-flash-medium");
+        writer.execute("INSERT INTO gen_metadata (data) VALUES (?1)", [&blob]).unwrap();
+        assert!(conv.join("cid-live.db-wal").exists());
+        writer
+    }
+
+    fn fetch_with_temp_dir(cli_dir: &Path, temp_dir: &Path) -> SourceResult {
+        let src = AntigravitySource::new(AntigravitySourceOptions {
+            temp_dir: Some(temp_dir.to_path_buf()),
+            ..opts_for(cli_dir.to_path_buf())
+        });
+        futures::executor::block_on(async move { src.fetch().await }).unwrap()
+    }
+
+    #[test]
+    fn fetch_reads_records_still_in_the_wal() {
+        let cli = TempDir::new().unwrap();
+        let scratch = TempDir::new().unwrap();
+        let conv = cli.path().join("conversations");
+        fs::create_dir_all(&conv).unwrap();
+        let _writer = conversation_db_with_record_in_wal(&conv);
+
+        let r = fetch_with_temp_dir(cli.path(), scratch.path());
+
+        let daily: Vec<_> = r
+            .data
+            .events
+            .iter()
+            .filter(|e| e.record_type == "daily")
+            .map(|e| e.total_tokens)
+            .collect();
+        assert_eq!(daily, vec![3_300], "the WAL-only record was not read");
+    }
+
+    #[test]
+    fn fetch_leaves_no_files_in_temp_dir() {
+        let cli = TempDir::new().unwrap();
+        let scratch = TempDir::new().unwrap();
+        let conv = cli.path().join("conversations");
+        fs::create_dir_all(&conv).unwrap();
+        let _writer = conversation_db_with_record_in_wal(&conv);
+
+        fetch_with_temp_dir(cli.path(), scratch.path());
+
+        let left: Vec<_> = fs::read_dir(scratch.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "DB copies left behind: {left:?}");
     }
 
     #[test]

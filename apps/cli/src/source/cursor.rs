@@ -21,18 +21,17 @@
 
 use std::collections::HashMap;
 use std::env;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::model::{DataSource, EventRow, EventsSnapshotData, SourceResult};
 use crate::util::date::ch_now;
 use crate::util::hash::make_dedup_key;
+use crate::util::sqlite::SqliteSnapshot;
 
 /// Stable identity for account-wide Cursor rows. Must not be the importer hostname.
 pub const CURSOR_ACCOUNT_MACHINE: &str = "account";
@@ -816,43 +815,24 @@ pub fn read_cursor_access_token(db_path: &Path) -> Option<String> {
     if !db_path.exists() {
         return None;
     }
-    let temp_dir = env::temp_dir();
-    let id = uuid::Uuid::new_v4();
-    let temp_db = temp_dir.join(format!("cursor-auth-{id}.vscdb"));
-    if fs::copy(db_path, &temp_db).is_err() {
+    let snapshot = SqliteSnapshot::open(db_path, None).ok()?;
+    let value: String = snapshot
+        .conn
+        .query_row(
+            "SELECT value FROM ItemTable WHERE key = ?1 LIMIT 1",
+            ["cursorAuth/accessToken"],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
         return None;
     }
-    let wal = PathBuf::from(format!("{}-wal", db_path.display()));
-    let shm = PathBuf::from(format!("{}-shm", db_path.display()));
-    if wal.exists() {
-        let _ = fs::copy(&wal, format!("{}-wal", temp_db.display()));
+    if trimmed.starts_with('"') {
+        serde_json::from_str::<String>(trimmed).ok()
+    } else {
+        Some(trimmed.to_string())
     }
-    if shm.exists() {
-        let _ = fs::copy(&shm, format!("{}-shm", temp_db.display()));
-    }
-    let token = (|| {
-        let conn = Connection::open(&temp_db).ok()?;
-        let value: String = conn
-            .query_row(
-                "SELECT value FROM ItemTable WHERE key = ?1 LIMIT 1",
-                ["cursorAuth/accessToken"],
-                |row| row.get(0),
-            )
-            .ok()?;
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        if trimmed.starts_with('"') {
-            serde_json::from_str::<String>(trimmed).ok()
-        } else {
-            Some(trimmed.to_string())
-        }
-    })();
-    let _ = fs::remove_file(&temp_db);
-    let _ = fs::remove_file(format!("{}-wal", temp_db.display()));
-    let _ = fs::remove_file(format!("{}-shm", temp_db.display()));
-    token
 }
 
 fn cookie_from_access_token(jwt: &str) -> String {

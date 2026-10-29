@@ -91,7 +91,7 @@ dirs = "7"
 # Random (for retry jitter)
 rand = "0.10"
 
-# Temp files for tests
+# Temp dirs (SQLite snapshots, tests)
 tempfile = "3"
 
 [dev-dependencies]
