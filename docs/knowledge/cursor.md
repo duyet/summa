@@ -15,5 +15,6 @@ Missing credentials skip the source; the rest of `summa import` continues. `--sk
 ## Rows
 
 - `machine_name` is always `account` so two hosts importing the same account do not double-count.
-- `source` distinguishes surfaces: `cursor`, `cursor-cloud-agent` (`cloudAgentId` or `isHeadless`), `cursor-api` (`serviceAccountId`), `cursor-grok-bot` (grok-bot signal or grok model). Unclassifiable events still import as `cursor`.
+- `source` distinguishes surfaces: `cursor`, `cursor-cloud-agent` (`cloudAgentId` or `isHeadless`), `cursor-api` (`serviceAccountId`). Unclassifiable events still import as `cursor`.
+- Grok Bot chat events (grok-bot signal or grok model) are **not** written here. They are the `grok-bot` source (`docs/knowledge/grok-bot.md`), which reads the same events and is gated by `--skip-grok-bot`. Exactly one of the two sources claims each event, so a chat is never counted twice under two source labels.
 - Tokens from `tokenUsage` (`cacheWriteTokens` → `cache_creation_tokens`). Cost from `chargedCents / 100`, fallback `tokenUsage.totalCents / 100`.

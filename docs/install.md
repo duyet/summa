@@ -35,7 +35,8 @@ protocol = "http"
 [importer]
 # duckdb_path = "md:ccusage"   # MotherDuck
 days_back = 7
-# skip_cursor / skip_grok stay off — every machine imports; sinks dedup
+# no skip_* keys: ccusage, opencode, codex, antigravity, hermes, grok, grok-bot,
+# devin, cursor, pi, fx and command-code all import; sinks dedup
 
 [update]
 channel = "beta"   # or "stable"
@@ -53,7 +54,7 @@ motherduck_token = "…"
 # telemetry_token = "…"
 ```
 
-Keep **Cursor**, **Grok** and **Devin** enabled on every host. Account-wide Cursor rows use `machine_name=account`. DuckDB delete-by-key and ClickHouse ReplacingMergeTree collapse duplicates. Do not set `skip_cursor` to “avoid double-count”.
+Keep **Cursor**, **Grok**, **Grok Bot** and **Devin** enabled on every host. Account-wide Cursor and Grok Bot rows use `machine_name=account`. DuckDB delete-by-key and ClickHouse ReplacingMergeTree collapse duplicates. Do not set `skip_cursor` to “avoid double-count”. `skip_devin` is for hosts that really must not import Devin — an absent CLI is already an empty source, so there is no reason to set it. Host profile for the Grok Bot box (`machine_name = "cursor"`): `docs/knowledge/grok-bot.md`.
 
 ### Optional agent CLIs
 

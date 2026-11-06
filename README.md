@@ -1,7 +1,7 @@
 # summa
 
 **summa** (*Latin*: sum, total, summary) — lightweight CLI that imports Claude
-Code (**ccusage**), Codex, OpenCode, Cursor, Grok, Devin, pi, fx, Command Code, and
+Code (**ccusage**), Codex, OpenCode, Cursor, Grok, Grok Bot, Devin, pi, fx, Command Code, and
 other agent usage into local DuckDB, optionally syncing to ClickHouse or MotherDuck.
 
 | | |
@@ -116,6 +116,7 @@ summa import --days-back=7
 summa import --skip-clickhouse
 summa import --skip-cursor
 summa import --skip-grok
+summa import --skip-grok-bot      # Grok Bot chat tokens (not Grok Build)
 summa import --skip-pi
 summa import --skip-fx
 summa import --skip-command-code
@@ -163,7 +164,7 @@ telemetry_token = "summa_…"
 
 Logs: `~/.local/log/summa/cron.log`. Optional env file: `~/.config/summa/env` (systemd). `SUMMA_SETUP_CRON=1` registers the job at install time.
 
-Keep Cursor and Grok enabled on every host. Account-wide Cursor uses `machine_name=account`; sinks dedup.
+Keep Cursor, Grok, Grok Bot and Devin enabled on every host. Account-wide Cursor and Grok Bot rows use `machine_name=account`; sinks dedup.
 
 ## Development / release
 

@@ -195,6 +195,9 @@ pub struct ImporterConfig {
     pub skip_antigravity: Option<bool>,
     pub skip_hermes: Option<bool>,
     pub skip_grok: Option<bool>,
+    /// Grok Bot chat tokens. Independent of `skip_grok` (Grok Build) and
+    /// `skip_cursor`; the rows come from the account-wide usage-events feed.
+    pub skip_grok_bot: Option<bool>,
     pub skip_devin: Option<bool>,
     pub skip_cursor: Option<bool>,
     pub skip_pi: Option<bool>,

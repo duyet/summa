@@ -1,6 +1,6 @@
 # Devin source
 
-Local Devin CLI (Cognition) usage, read from disk. `source = devin`. `--skip-devin` disables registration.
+Local Devin CLI (Cognition) usage, read from disk. `source = devin`. Enabled by default; only `--skip-devin` / `[importer] skip_devin` disables registration. Do not disable it to quiet a host without the CLI — a missing CLI is already an empty source, and skipping it silently stops ATIF transcripts from importing.
 
 ## Install the CLI
 
