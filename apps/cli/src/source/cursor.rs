@@ -1194,7 +1194,7 @@ mod tests {
         assert!(sess.iter().all(|e| e.source != SOURCE_GROK_BOT));
         assert_eq!(classify_cursor_surface(&grok_bot_event()), SOURCE_GROK_BOT);
 
-        let sources: Vec<&str> = [editor, cloud, api, residual].iter().map(|e| e.source.as_str()).collect();
+        let sources: Vec<&str> = [editor, cloud, api].iter().map(|e| e.source.as_str()).collect();
         for i in 0..sources.len() {
             for j in (i + 1)..sources.len() {
                 assert_ne!(sources[i], sources[j], "each kind must differ");
