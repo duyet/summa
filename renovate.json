@@ -1,6 +1,19 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:recommended"
+    "config:recommended",
+    "group:all",
+    "schedule:weekly"
+  ],
+  "automerge": true,
+  "automergeType": "pr",
+  "packageRules": [
+    {
+      "description": "MotherDuck's extension refuses DuckDB 2.x; hold the duckdb crate on 1.x until MotherDuck supports it",
+      "matchPackageNames": [
+        "duckdb"
+      ],
+      "allowedVersions": "<1.20000.0"
+    }
   ]
 }
