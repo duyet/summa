@@ -21,6 +21,7 @@ use crate::source::grok::{GrokSource, GrokSourceOptions};
 use crate::source::grok_api::{GrokApiSource, GrokApiSourceOptions};
 use crate::source::grok_bot::{GrokBotSource, GrokBotSourceOptions};
 use crate::source::hermes::{HermesSource, HermesSourceOptions};
+use crate::source::opencode::{OpenCodeSource, OpenCodeSourceOptions};
 use crate::source::pi::{PiSource, PiSourceOptions};
 use crate::util::date::resolve_effective_since;
 use std::env;
@@ -34,10 +35,11 @@ use std::env;
 /// would put two independent parsers on the same `source = "pi"` rows, and
 /// whichever finished last would win — so a parser that miscounts forks could
 /// silently inflate the dashboard. `companion_source_ids` guards against
-/// reintroducing the overlap.
+/// reintroducing the overlap. OpenCode follows the same rule: `source::opencode`
+/// reads its SQLite storage (legacy and current tables), which the ccusage
+/// companion stopped seeing after OpenCode moved to `session_message`.
 const COMPANION_AGENTS: &[CompanionSource] = &[
     CompanionSource::Codex,
-    CompanionSource::OpenCode,
     CompanionSource::Gemini,
     CompanionSource::OpenClaw,
     CompanionSource::Amp,
@@ -309,6 +311,20 @@ pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
         })));
     }
 
+    if !args.skip_opencode {
+        sources.push(Box::new(OpenCodeSource::new(OpenCodeSourceOptions {
+            machine_name: machine_name.clone(),
+            hash_projects,
+            verbose,
+            days_back,
+            since: effective_since.clone(),
+            end_date: end_date.clone(),
+            import_id: import_id.clone(),
+            base_dir: None,
+            temp_dir: None,
+        })));
+    }
+
     if !args.skip_command_code {
         sources.push(Box::new(CommandCodeSource::new(CommandCodeSourceOptions {
             machine_name: machine_name.clone(),
@@ -499,7 +515,6 @@ pub fn apply_importer_skips(args: &mut ImportArgs, cfg: &crate::config::Importer
 fn should_skip_companion(args: &ImportArgs, id: &str) -> bool {
     match id {
         "codex" => args.skip_codex,
-        "opencode" => args.skip_opencode,
         _ => false,
     }
 }
@@ -522,6 +537,9 @@ pub fn enabled_source_ids(args: &ImportArgs) -> Vec<&'static str> {
     }
     if !args.skip_devin {
         ids.push("devin");
+    }
+    if !args.skip_opencode {
+        ids.push("opencode");
     }
     if !args.skip_command_code {
         ids.push("command-code");
@@ -582,6 +600,7 @@ mod tests {
             "ccusage",
             "antigravity",
             "hermes",
+            "opencode",
             "grok",
             "devin",
             "cursor",
@@ -600,7 +619,7 @@ mod tests {
     #[test]
     fn companion_source_ids_exclude_natively_covered_agents() {
         let ids: Vec<&str> = COMPANION_AGENTS.iter().map(|a| a.as_str()).collect();
-        for native in ["pi", "command-code", "fx"] {
+        for native in ["pi", "command-code", "fx", "opencode"] {
             assert!(
                 !ids.contains(&native),
                 "`{native}` is read natively and must not also run via ccusage"

@@ -127,7 +127,7 @@ pub struct ImportArgs {
     /// Skip ccusage source
     #[arg(long)]
     pub skip_ccusage: bool,
-    /// Skip OpenCode/companion source
+    /// Skip OpenCode source
     #[arg(long)]
     pub skip_opencode: bool,
     /// Skip Codex source
