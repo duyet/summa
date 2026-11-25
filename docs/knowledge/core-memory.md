@@ -55,7 +55,7 @@ rg -n "<symbol>" apps/cli/src apps/cli/tests -g '!**/*.test.ts' -g '!**/*.spec.t
 - Workspace is virtual: CI and publish **must** use `-p summa-import` (CLI) and `-p summa-api` (Worker). Never `cargo publish` / `cargo package` at the workspace root.
 - `scripts/ci/validate-deploy.sh` gates `install.sh` dry-run, k8s manifests, wrangler.jsonc + D1 migrations, and release-please package path (`apps/cli` + `cargo-workspace` plugin).
 - release-please: package `apps/cli` (crate `summa-import`), not `.`. Do **not** auto-merge `release-please--*` PRs.
-- Wrangler dry-run is a CI job (`wrangler deploy --dry-run`); live deploy is `bun run deploy:api` with Cloudflare creds.
+- Wrangler dry-run is a CI job (`wrangler deploy --dry-run`); the `deploy` job in `ci.yml` applies D1 migrations and runs `wrangler deploy` on master after the checks pass (skips with a notice when the `CLOUDFLARE_API_TOKEN` secret is absent); `bun run deploy:api` still works by hand.
 
 ## CI and archived Python docs
 
