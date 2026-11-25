@@ -7,7 +7,7 @@ D1 holds **API keys and accounts**, plus a **daily-row analytics mirror** (`ccus
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo check -p summa-api --target wasm32-unknown-unknown
-# worker crate 0.8.x + worker-build 0.8.5 (pinned in wrangler.jsonc).
+# build.sh installs the worker-build minor that matches the worker crate in Cargo.lock.
 bun run deploy:api
 ```
 

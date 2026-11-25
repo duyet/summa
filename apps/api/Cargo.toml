@@ -10,7 +10,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-worker = { version = "0.8", features = ["d1", "http"] }
+worker = { version = "0.9", features = ["d1", "http"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
