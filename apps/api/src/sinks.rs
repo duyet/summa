@@ -103,6 +103,11 @@ pub async fn d1_query(env: &Env, sql: &str) -> std::result::Result<String, Strin
     serde_json::to_string(&rows).map_err(|e| e.to_string())
 }
 
+/// Rows per INSERT statement. Upsert statements can grow large; keep each
+/// statement modest and send them sequentially through a primary-pinned
+/// session (see below).
+const D1_ROWS_PER_STATEMENT: usize = 10;
+
 /// Write the `daily` rows into the D1 read mirror. Upserts only — no deletes —
 /// so a corrected re-import overwrites its `dedup_key` in place and a tunnel
 /// outage on another sink can never cascade into D1.
@@ -112,37 +117,29 @@ async fn write_d1(env: &Env, rows: &[EventRow]) -> SinkAck {
     if daily.is_empty() {
         return ack("d1", 0, start, None);
     }
-    let account_id = rows.first().map(|r| r.account_id.as_str()).unwrap_or("");
-    if account_id.is_empty() {
+    if daily[0].account_id.is_empty() {
         return ack("d1", 0, start, Some("missing account_id".into()));
     }
-    let db = match env.d1("DB") {
+    // Primary-pinned session: the mirror write must not land on a read replica.
+    let db = match env.d1("DB").and_then(|db| {
+        db.with_session_constraint(worker::D1SessionConstraint::FirstPrimary)
+    }) {
         Ok(db) => db,
         Err(e) => return ack("d1", 0, start, Some(e.to_string())),
     };
-    let mut stmts = Vec::new();
-    stmts.push(db.prepare(D1_CREATE_TABLE));
-    stmts.push(db.prepare(D1_CREATE_INDEX));
-    for chunk in daily.chunks(200) {
-        stmts.push(db.prepare(&d1_insert_sql(chunk)));
+    // No DDL here: the schema is owned by migration 0004. Statements run one
+    // at a time; a failure keeps the rows already upserted in the ack, and a
+    // re-import converges because the writes are upserts.
+    let mut written = 0u64;
+    for chunk in daily.chunks(D1_ROWS_PER_STATEMENT) {
+        if let Err(e) = db.prepare(&d1_insert_sql(chunk)).run().await {
+            let msg = format!("after {written} of {} rows: {e}", daily.len());
+            return ack("d1", written, start, Some(msg));
+        }
+        written += chunk.len() as u64;
     }
-    match db.batch(stmts).await {
-        Ok(_) => ack("d1", daily.len() as u64, start, None),
-        Err(e) => ack("d1", 0, start, Some(e.to_string())),
-    }
+    ack("d1", written, start, None)
 }
-
-const D1_CREATE_TABLE: &str = "CREATE TABLE IF NOT EXISTS ccusage_events (\
-  dedup_key TEXT PRIMARY KEY, account_id TEXT NOT NULL DEFAULT '', api_key_id TEXT NOT NULL DEFAULT '', \
-  date TEXT NOT NULL, record_type TEXT NOT NULL DEFAULT 'daily', source TEXT NOT NULL DEFAULT '', \
-  machine_name TEXT NOT NULL DEFAULT '', model_name TEXT NOT NULL DEFAULT '', \
-  input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, \
-  cache_creation_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, \
-  reasoning_tokens INTEGER NOT NULL DEFAULT 0, total_tokens INTEGER NOT NULL DEFAULT 0, \
-  cost REAL NOT NULL DEFAULT 0, entries INTEGER NOT NULL DEFAULT 0, \
-  import_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''";
-const D1_CREATE_INDEX: &str =
-    "CREATE INDEX IF NOT EXISTS ccusage_events_acct_date ON ccusage_events (account_id, date, record_type)";
 
 const D1_EVENT_COLS: &str = "dedup_key, account_id, api_key_id, date, record_type, source, \
 machine_name, model_name, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, \
@@ -192,7 +189,6 @@ fn d1_event_values_sql(row: &EventRow) -> String {
         sql_literal(&row.updated_at),
     )
 }
-
 
 async fn write_clickhouse(env: &Env, rows: &[EventRow]) -> SinkAck {
     let start = now_ms();
@@ -970,6 +966,16 @@ mod tests {
         assert!(!clickhouse_access_configured("", "s"));
         assert!(!clickhouse_access_configured("id", ""));
         assert!(clickhouse_access_configured("id", "s"));
+    }
+
+    #[test]
+    fn d1_analytics_migration_has_balanced_statements() {
+        let sql = include_str!("../migrations/0004_d1_analytics.sql");
+        assert_eq!(
+            sql.matches('(').count(),
+            sql.matches(')').count(),
+            "unbalanced parens make D1 report `incomplete input`: {sql}"
+        );
     }
 
     #[test]

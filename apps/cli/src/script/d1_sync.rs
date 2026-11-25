@@ -37,11 +37,7 @@ pub async fn run(args: D1SyncArgs) -> anyhow::Result<()> {
     let endpoint = cfg.telemetry.endpoint.as_deref();
 
     // Config::load exports MOTHERDUCK_TOKEN from credentials.toml when set.
-    let md_token = std::env::var("MOTHERDUCK_TOKEN")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_default();
-    let conn = open_connection(&duckdb_path, &md_token)?;
+    let conn = open_connection(&duckdb_path)?;
 
     let where_clause = if args.full {
         "WHERE record_type = 'daily'".to_string()

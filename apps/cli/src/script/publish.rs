@@ -16,11 +16,7 @@ pub async fn run(args: PublishArgs) -> anyhow::Result<()> {
 
     println!("publish: {} → clickhouse {}", duckdb_path, cfg.clickhouse.host);
 
-    let md_token = std::env::var("MOTHERDUCK_TOKEN")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_default();
-    let conn = open_connection(&duckdb_path, &md_token)?;
+    let conn = open_connection(&duckdb_path)?;
     let events = read_event_rows(&conn, "")?;
 
     if events.is_empty() {
