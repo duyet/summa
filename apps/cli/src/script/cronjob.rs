@@ -17,6 +17,7 @@ use clap::{Parser, Subcommand};
 pub const LAUNCHD_LABEL: &str = "net.duyet.summa.import";
 pub const SYSTEMD_UNIT: &str = "summa-import";
 pub const CRON_MARKER: &str = "# summa-import managed";
+const INSTALLER_URL: &str = "https://summa.duyet.net/install.sh";
 
 #[derive(Parser, Debug, Clone)]
 pub struct CronjobArgs {
@@ -238,8 +239,31 @@ pub fn generate_job_script(bin: &Path, days_back: i64) -> String {
     s.push_str("    set +a\n");
     s.push_str("  fi\n");
     s.push_str("done\n");
-    s.push_str(&format!("'{bin_q}' update >/dev/null 2>&1 || true\n"));
-    s.push_str(&format!("exec '{bin_q}' import --days-back={days_back}\n"));
+    let install_env = match bin.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => {
+            let dir_q = dir.display().to_string().replace('\'', "'\\''");
+            format!("SUMMA_INSTALL_DIR='{dir_q}' ")
+        }
+        _ => String::new(),
+    };
+    s.push_str(&format!("BIN='{bin_q}'\n"));
+    s.push_str("ensure_bin() {\n");
+    s.push_str("  if [ -x \"$BIN\" ]; then\n");
+    s.push_str("    return 0\n");
+    s.push_str("  fi\n");
+    s.push_str("  echo \"summa-import: $BIN is missing, reinstalling\" >&2\n");
+    s.push_str(&format!(
+        "  curl -fsSL {INSTALLER_URL} | {install_env}bash >&2 || true\n"
+    ));
+    s.push_str("  if [ ! -x \"$BIN\" ]; then\n");
+    s.push_str("    echo \"summa-import: $BIN is still missing after reinstall\" >&2\n");
+    s.push_str("    exit 127\n");
+    s.push_str("  fi\n");
+    s.push_str("}\n");
+    s.push_str("ensure_bin\n");
+    s.push_str("\"$BIN\" update >/dev/null || echo \"summa-import: update failed (exit $?), continuing\" >&2\n");
+    s.push_str("ensure_bin\n");
+    s.push_str(&format!("exec \"$BIN\" import --days-back={days_back}\n"));
     s
 }
 
@@ -917,8 +941,93 @@ mod tests {
         let sh = generate_job_script(Path::new("/opt/summa"), 3);
         assert!(sh.starts_with("#!/bin/sh"));
         assert!(sh.contains(". \"$HOME/.config/summa/env\"") || sh.contains("$HOME/.config/summa/env"));
-        assert!(sh.contains("'/opt/summa' update"));
-        assert!(sh.contains("exec '/opt/summa' import --days-back=3"));
+        assert!(sh.contains("BIN='/opt/summa'"));
+        assert!(sh.contains("exec \"$BIN\" import --days-back=3"));
+    }
+
+    #[cfg(unix)]
+    fn write_exe(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    /// Runs the generated job with an isolated HOME; a `curl` in
+    /// `$HOME/.local/bin` shadows the real one (the script puts that dir first).
+    #[cfg(unix)]
+    fn run_job_script(home: &Path, bin: &Path) -> std::process::Output {
+        let script = home.join("job.sh");
+        std::fs::write(&script, generate_job_script(bin, 3)).unwrap();
+        Command::new("/bin/sh")
+            .arg(&script)
+            .env_clear()
+            .env("HOME", home)
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    const FAKE_INSTALLER_CURL: &str = "#!/bin/sh
+cat <<'EOF'
+mkdir -p \"$SUMMA_INSTALL_DIR\"
+printf '#!/bin/sh\\necho \"ran $*\"\\n' > \"$SUMMA_INSTALL_DIR/summa\"
+chmod 755 \"$SUMMA_INSTALL_DIR/summa\"
+EOF
+";
+
+    #[cfg(unix)]
+    #[test]
+    fn job_script_reinstalls_missing_binary_then_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join(".local/bin/summa");
+        write_exe(&tmp.path().join(".local/bin/curl"), FAKE_INSTALLER_CURL);
+
+        let out = run_job_script(tmp.path(), &bin);
+
+        assert!(out.status.success(), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("ran import --days-back=3"));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("is missing, reinstalling"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn job_script_fails_loudly_when_reinstall_cannot_restore_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join(".local/bin/summa");
+        write_exe(
+            &tmp.path().join(".local/bin/curl"),
+            "#!/bin/sh\necho 'curl: (22) server said no' >&2\nexit 22\n",
+        );
+
+        let out = run_job_script(tmp.path(), &bin);
+
+        assert_eq!(out.status.code(), Some(127), "{out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("server said no"), "{stderr}");
+        assert!(stderr.contains("still missing after reinstall"), "{stderr}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn job_script_logs_update_failure_and_still_imports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin = tmp.path().join(".local/bin/summa");
+        write_exe(
+            &bin,
+            "#!/bin/sh\nif [ \"$1\" = update ]; then echo 'boom from update' >&2; exit 3; fi\necho \"ran $*\"\n",
+        );
+
+        let out = run_job_script(tmp.path(), &bin);
+
+        assert!(out.status.success(), "{out:?}");
+        assert!(String::from_utf8_lossy(&out.stdout).contains("ran import --days-back=3"));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("boom from update"), "{stderr}");
+        assert!(stderr.contains("update failed (exit 3)"), "{stderr}");
     }
 
     #[test]

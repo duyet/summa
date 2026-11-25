@@ -875,23 +875,39 @@ fn find_file_named(dir: &Path, name: &str) -> Option<PathBuf> {
     rec(dir, name)
 }
 
+/// Replaces `dest` atomically, or leaves it untouched on any failure.
+/// The staging file is unique and lives in `dest`'s directory: `summa update`
+/// and the auto-update tick run concurrently in one job, and rename is only
+/// atomic within a single filesystem.
 fn install_binary(src: &Path, dest: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = dest.with_extension("summa.new");
-    fs::copy(src, &tmp)?;
+    let dir = match dest.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    fs::create_dir_all(dir)?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".summa-install-")
+        .tempfile_in(dir)
+        .with_context(|| format!("stage binary in {}", dir.display()))?;
+    let mut input = fs::File::open(src).with_context(|| format!("open {}", src.display()))?;
+    std::io::copy(&mut input, staged.as_file_mut())
+        .with_context(|| format!("copy {} to staging file", src.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&tmp)?.permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&tmp, perms)?;
+        staged
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o755))?;
     }
-    fs::rename(&tmp, dest).or_else(|_| {
-        fs::remove_file(dest).ok();
-        fs::rename(&tmp, dest)
-    })?;
+    staged.as_file().sync_all()?;
+    staged
+        .persist(dest)
+        .map_err(|e| e.error)
+        .with_context(|| format!("replace {}", dest.display()))?;
+    #[cfg(unix)]
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
     Ok(())
 }
 
@@ -1130,6 +1146,115 @@ mod tests {
         let c = UpdateArgs::parse_from(["update"]);
         assert_eq!(c.channel_override(), None);
         assert!(UpdateArgs::try_parse_from(["update", "--beta", "--stable"]).is_err());
+    }
+
+    fn dir_entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn install_binary_replaces_dest_with_executable_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("incoming");
+        let bin_dir = tmp.path().join("bin");
+        let dest = bin_dir.join("summa");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(&src, b"new build").unwrap();
+        fs::write(&dest, b"old build").unwrap();
+
+        install_binary(&src, &dest).unwrap();
+
+        assert_eq!(fs::read(&dest).unwrap(), b"new build");
+        assert_eq!(dir_entries(&bin_dir), ["summa"], "no staging file left behind");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&dest).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+    }
+
+    #[test]
+    fn install_binary_creates_missing_install_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("incoming");
+        fs::write(&src, b"fresh").unwrap();
+        let dest = tmp.path().join("nested/bin/summa");
+
+        install_binary(&src, &dest).unwrap();
+
+        assert_eq!(fs::read(&dest).unwrap(), b"fresh");
+    }
+
+    #[test]
+    fn install_binary_unreadable_source_keeps_working_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let dest = bin_dir.join("summa");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(&dest, b"working build").unwrap();
+
+        let err = install_binary(&tmp.path().join("missing"), &dest).unwrap_err();
+
+        assert!(format!("{err:#}").contains("missing"), "{err:#}");
+        assert_eq!(fs::read(&dest).unwrap(), b"working build");
+        assert_eq!(dir_entries(&bin_dir), ["summa"]);
+    }
+
+    #[test]
+    fn install_binary_failed_replace_leaves_dest_and_no_staging_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("incoming");
+        fs::write(&src, b"new build").unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let dest = bin_dir.join("summa");
+        fs::create_dir_all(dest.join("keep")).unwrap();
+
+        assert!(install_binary(&src, &dest).is_err());
+
+        assert!(dest.join("keep").is_dir(), "dest must not be removed");
+        assert_eq!(dir_entries(&bin_dir), ["summa"]);
+    }
+
+    #[test]
+    fn install_binary_concurrent_installs_always_leave_a_complete_binary() {
+        const WRITERS: usize = 8;
+        const SIZE: usize = 512 * 1024;
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        let dest = bin_dir.join("summa");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(&dest, vec![0xff; SIZE]).unwrap();
+        let sources: Vec<PathBuf> = (0..WRITERS)
+            .map(|i| {
+                let p = tmp.path().join(format!("incoming-{i}"));
+                fs::write(&p, vec![i as u8; SIZE]).unwrap();
+                p
+            })
+            .collect();
+        let start = std::sync::Barrier::new(WRITERS);
+
+        std::thread::scope(|s| {
+            for src in &sources {
+                let (start, dest) = (&start, &dest);
+                s.spawn(move || {
+                    start.wait();
+                    install_binary(src, dest).unwrap();
+                });
+            }
+        });
+
+        let installed = fs::read(&dest).unwrap();
+        assert_eq!(installed.len(), SIZE, "binary must not be truncated");
+        let first = installed[0];
+        assert!((first as usize) < WRITERS, "binary must come from one installer");
+        assert!(installed.iter().all(|b| *b == first), "binary must not be a mix of two installs");
+        assert_eq!(dir_entries(&bin_dir), ["summa"]);
     }
 
     #[test]

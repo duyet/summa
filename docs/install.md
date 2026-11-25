@@ -93,6 +93,6 @@ summa import --verbose --days-back=2
 
 Hosted hub: [https://summa.duyet.net](https://summa.duyet.net). Put `telemetry_token` in `credentials.toml` and optional `[telemetry] endpoint`. `summa import` POSTs `/v1/ingest`. D1 is keys/accounts only; usage is ClickHouse + MotherDuck. See `docs/telemetry.md` and `apps/api/README.md`. Copy `.env.example` → `.env`.
 
-Cron job: `summa update` then `summa import`.
+Cron job: `summa update` then `summa import`. The job script logs update errors, reinstalls with `install.sh` when the binary is missing, and exits 127 if that fails.
 
 Kubernetes: Hermes runs **import** (client), not a local telemetry server. Sidebar iframe `https://summa.duyet.net`. Hourly CronJob. Secret: `SUMMA_TELEMETRY_ENDPOINT=https://summa.duyet.net` and `SUMMA_TELEMETRY_TOKEN`. Manifest: `deploy/k8s/summa-sidecar.yaml`.
