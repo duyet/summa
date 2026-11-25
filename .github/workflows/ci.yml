@@ -205,3 +205,60 @@ jobs:
           exit 1
         fi
         echo "All required checks passed!"
+
+  deploy:
+    name: Deploy Worker (D1 migrations + wrangler deploy)
+    # Runs only after every check above passed, on master. Needs the
+    # CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets; without
+    # the token it skips with a notice instead of failing the run.
+    needs: [status-check]
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: deploy-worker
+      cancel-in-progress: false
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+    - name: Check Cloudflare credentials
+      id: gate
+      run: |
+        set -euo pipefail
+        if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+          msg="CLOUDFLARE_API_TOKEN is not set; skipping the Worker deploy. Add the secret to deploy from CI."
+          echo "::notice title=Worker deploy skipped::$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Checkout code
+      if: steps.gate.outputs.enabled == 'true'
+      uses: actions/checkout@v7
+    - name: Install bun
+      if: steps.gate.outputs.enabled == 'true'
+      uses: oven-sh/setup-bun@v2
+    - name: Install Rust (wasm)
+      if: steps.gate.outputs.enabled == 'true'
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - name: Cache cargo
+      if: steps.gate.outputs.enabled == 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: wrangler-dry-run
+    - name: bun install
+      if: steps.gate.outputs.enabled == 'true'
+      run: bun install --frozen-lockfile
+    - name: Apply D1 migrations
+      if: steps.gate.outputs.enabled == 'true'
+      working-directory: apps/api
+      run: bunx wrangler d1 migrations apply summa-telemetry --remote
+    - name: Deploy Worker
+      if: steps.gate.outputs.enabled == 'true'
+      working-directory: apps/api
+      run: bunx wrangler deploy

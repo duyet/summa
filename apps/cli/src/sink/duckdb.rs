@@ -124,7 +124,7 @@ impl DuckDbSink {
         Ok(conn.execute(&sql, [])?)
     }
 
-    fn open_connection(&self) -> anyhow::Result<duckdb::Connection> {
+    pub(crate) fn open_connection(&self) -> anyhow::Result<duckdb::Connection> {
         if !self.is_motherduck {
             if let Some(parent) = Path::new(&self.db_path).parent() {
                 if !parent.as_os_str().is_empty() {

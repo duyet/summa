@@ -53,6 +53,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Commands::Cronjob(args) => crate::script::cronjob::run(args).await,
         Commands::Publish(args) => crate::script::publish::run(args).await,
+        Commands::D1Sync(args) => crate::script::d1_sync::run(args).await,
         Commands::Update(args) => crate::script::update::run(args).await,
         Commands::Serve(args) => crate::script::serve::run(args).await,
     };
@@ -92,6 +93,8 @@ pub enum Commands {
     Cronjob(CronjobArgs),
     /// Publish local DuckDB events to ClickHouse
     Publish(PublishArgs),
+    /// Mirror DuckDB/MotherDuck daily rows into the cloud hub D1 read mirror
+    D1Sync(crate::script::d1_sync::D1SyncArgs),
     /// Install the newest CI Release-workflow binary for this OS/arch
     Update(crate::script::update::UpdateArgs),
     /// Ping the cloud hub (summa.duyet.net). Local HTTP server removed.
@@ -363,6 +366,27 @@ mod tests {
                 assert!(args.skip_fx);
             }
             other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_d1_sync_defaults() {
+        let cli = Cli::try_parse_from(["summa", "d1-sync"]).unwrap();
+        match cli.command {
+            Commands::D1Sync(args) => {
+                assert_eq!(args.days_back, 30);
+                assert!(!args.full);
+            }
+            other => panic!("expected D1Sync, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_d1_sync_full() {
+        let cli = Cli::try_parse_from(["summa", "d1-sync", "--full"]).unwrap();
+        match cli.command {
+            Commands::D1Sync(args) => assert!(args.full),
+            other => panic!("expected D1Sync, got {other:?}"),
         }
     }
 }

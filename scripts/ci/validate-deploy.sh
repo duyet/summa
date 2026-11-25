@@ -264,6 +264,11 @@ echo "$ci" | grep -qE 'cargo test .* -p summa-import' || fail "ci.yml cargo test
 echo "$ci" | grep -q 'summa-api' || fail "ci.yml missing API wasm job"
 echo "$ci" | grep -q 'validate-deploy.sh' || fail "ci.yml must run scripts/ci/validate-deploy.sh"
 echo "$ci" | grep -q 'cargo package' || fail "ci.yml must cargo package -p summa-import"
+echo "$ci" | grep -q 'wrangler d1 migrations apply summa-telemetry --remote' \
+  || fail "ci.yml deploy job must apply D1 migrations"
+echo "$ci" | grep -q 'wrangler deploy$' || fail "ci.yml deploy job must run wrangler deploy"
+echo "$ci" | grep -q 'CLOUDFLARE_API_TOKEN is not set' \
+  || fail "ci.yml deploy job must skip with a notice when the token secret is absent"
 ok "CI/release workflows pin -p summa-import"
 
 [[ -f apps/cli/README.md ]] || fail "apps/cli/README.md required for cargo package"
