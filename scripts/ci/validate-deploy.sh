@@ -211,10 +211,10 @@ assert cfg.get("main") == "build/worker/shim.mjs", cfg.get("main")
 build_cmd = cfg.get("build", {}).get("command", "")
 assert "build.sh" in build_cmd, build_cmd
 build_sh = Path("apps/api/build.sh").read_text()
-if "worker-build --version 0.8.5" not in build_sh:
-    sys.exit("apps/api/build.sh must pin worker-build 0.8.5")
+if 'name = "worker"' not in build_sh or "Cargo.lock" not in build_sh:
+    sys.exit("apps/api/build.sh must derive the worker-build version from the worker crate in Cargo.lock")
 if "reference-types" not in build_sh:
-    sys.exit("apps/api/build.sh must set wasm reference-types for worker-build 0.8")
+    sys.exit("apps/api/build.sh must set wasm reference-types for worker-build")
 if "--no-panic-recovery" not in build_sh:
     sys.exit("apps/api/build.sh must pass --no-panic-recovery (wasm-bindgen abort-handler/externref)")
 routes = cfg.get("routes") or []
