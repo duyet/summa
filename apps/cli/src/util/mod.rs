@@ -8,6 +8,7 @@ pub mod format;
 pub mod hash;
 pub mod logger;
 pub mod pricing;
+pub mod redact;
 pub mod retry;
 pub mod sql;
 pub mod sqlite;

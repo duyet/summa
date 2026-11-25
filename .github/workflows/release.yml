@@ -123,9 +123,26 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: write
+    concurrency:
+      group: publish-beta
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      # Build time differs per commit, so an older run can reach this job after
+      # a newer one already published. Never move `beta` backwards.
+      - name: Check this commit is still the branch head
+        id: head
+        if: github.event_name == 'push'
+        run: |
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" --jq .sha)"
+          if [ "${head}" != "${GITHUB_SHA}" ]; then
+            echo "::notice::${GITHUB_SHA} is superseded by ${head}; not publishing beta"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
@@ -140,6 +157,7 @@ jobs:
       # Every master build lands on the rolling `beta` tag (beta channel).
       # release-please tagged releases are the stable channel.
       - name: Publish rolling beta release
+        if: steps.head.outputs.stale != 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: beta

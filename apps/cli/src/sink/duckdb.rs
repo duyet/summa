@@ -1,5 +1,6 @@
 use crate::model::{DataSink, EventRow, EventsSnapshotData, SinkResult};
 use crate::sink::csv::{csv_line, csv_value};
+use crate::util::redact::{redact_error, redact_secrets};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -161,8 +162,10 @@ impl DuckDbSink {
         }
         drop(bootstrap);
 
-        duckdb::Connection::open(conn_str)
-            .map_err(|e| anyhow::anyhow!("motherduck open `{conn_str}` failed after LOAD: {e}"))
+        // The error text can echo the connection string, which carries the token.
+        duckdb::Connection::open(conn_str).map_err(|e| {
+            anyhow::anyhow!(redact_secrets(&format!("motherduck open failed after LOAD: {e}")))
+        })
     }
 
     fn write_events_sync(&mut self, rows: &[EventRow]) -> anyhow::Result<usize> {
@@ -413,8 +416,8 @@ impl DataSink for DuckDbSink {
             conn.execute("SELECT 1", [])?;
             Ok::<_, anyhow::Error>(())
         })
-        .await??;
-        Ok(())
+        .await?
+        .map_err(redact_error)
     }
 
     async fn write(&mut self, data: EventsSnapshotData) -> anyhow::Result<SinkResult> {
@@ -440,7 +443,8 @@ impl DataSink for DuckDbSink {
                 sink.write_events_sync(&rows)
             }
         })
-        .await??;
+        .await?
+        .map_err(redact_error)?;
 
         result.tables_written.push("ccusage_events".to_string());
         result
