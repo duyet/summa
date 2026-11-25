@@ -9,6 +9,8 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout as tokio_timeout;
 
+use crate::fetcher::npx::run_exclusive;
+
 use crate::parser::rows::{CcusageData, CcusageFetchOptions};
 use crate::parser::types::{
     BlockUsage, CcusageProjectsResponse, DailyUsage, ProjectDailyUsage, SessionUsage,
@@ -175,7 +177,7 @@ async fn run_once(command: &str, date_flags: &str, runner: &str, timeout_dur: Du
         .stderr(Stdio::piped())
         .envs(std::env::vars_os());
 
-    let output = tokio_timeout(timeout_dur, cmd.output()).await??;
+    let output = run_exclusive(tokio_timeout(timeout_dur, cmd.output())).await??;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

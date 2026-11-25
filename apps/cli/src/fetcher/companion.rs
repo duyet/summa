@@ -12,6 +12,7 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout as tokio_timeout;
 
+use crate::fetcher::npx::run_exclusive;
 use crate::parser::companion::{normalize_companion_rows, normalize_usage_row, CompanionCommand, CompanionData, CompanionUsageRow};
 
 // ---------------------------------------------------------------------------
@@ -241,7 +242,7 @@ async fn run_once(
         cmd.env(key, value);
     }
 
-    let output = tokio_timeout(timeout_dur, cmd.output()).await??;
+    let output = run_exclusive(tokio_timeout(timeout_dur, cmd.output())).await??;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
