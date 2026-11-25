@@ -5,11 +5,16 @@
  * `~/.commandcode/projects/<project-slug>/<session-id>.jsonl`.
  *
  * Format verified against the shipped CLI (command-code 1.69.0,
- * `dist/cli.mjs`), not inferred from docs:
+ * `dist/cli.mjs`), not inferred from docs, and re-checked against 1.93.2
+ * transcripts:
  *
  *   header   {"type":"session","version":3,"id":…,"timestamp":ISO,"cwd":…}
  *   entry    {"type":"message","id":…,"parentId":…,"timestamp":ISO,
- *             "message":{"role":"assistant","model":…,"usage":{…}}}
+ *             "message":{"role":"assistant",…},"usage":{…},"model":…}
+ *
+ * Up to 1.69.0 `usage` and `model` sat inside `message`; newer CLIs write
+ * them at the top level of the entry. Both places are read, top level first.
+ * `<session>.checkpoints.jsonl` files sit next to transcripts and are skipped.
  *
  * The persisted usage object is built by the CLI's `toSessionUsage`:
  *
@@ -224,7 +229,12 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
         let path = entry.path();
         if path.is_dir() {
             collect_jsonl(&path, out, depth + 1);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+            && !path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".checkpoints.jsonl"))
+        {
             out.push(path);
         }
     }
@@ -274,9 +284,13 @@ fn read_session(
         if msg.get("role").and_then(|v| v.as_str()) != Some("assistant") {
             continue;
         }
-        let Some(usage) = msg.get("usage") else {
+        let Some(usage) = entry.get("usage").or_else(|| msg.get("usage")) else {
             continue;
         };
+        let entry_model = entry
+            .get("model")
+            .or_else(|| msg.get("model"))
+            .and_then(|v| v.as_str());
 
         // A forked or cloned transcript repeats the parent's entries verbatim.
         let identity = entry
@@ -303,12 +317,10 @@ fn read_session(
             continue;
         }
 
-        if let Some(m) = msg.get("model").and_then(|v| v.as_str()) {
+        if let Some(m) = entry_model {
             *last_model = Some(m.to_string());
         }
-        let model = msg
-            .get("model")
-            .and_then(|v| v.as_str())
+        let model = entry_model
             .map(|s| s.to_string())
             .or_else(|| last_model.clone())
             .unwrap_or_else(|| "unknown".to_string());
@@ -580,6 +592,60 @@ mod tests {
         assert_eq!(e.project_path, "/Users/me/app");
         assert_eq!(e.date, "2026-03-01");
         assert_eq!(e.entries, 1);
+    }
+
+    #[test]
+    fn top_level_usage_and_model_are_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "-p",
+            "s1.jsonl",
+            &format!(
+                "{HEADER}\n{}\n",
+                r#"{"type":"message","id":"m1","parentId":"p0","timestamp":"2026-03-01T09:00:05.709Z","message":{"role":"assistant","content":[],"meta":{"source":"model"}},"usage":{"inputTokens":300,"outputTokens":40,"cacheReadTokens":20,"cacheWriteTokens":5,"costUsd":0.37},"model":"vendor/new-model","effort":"high"}"#
+            ),
+        );
+        let src = CommandCodeSource::new(opts(tmp.path()));
+        let r = futures::executor::block_on(src.fetch()).unwrap();
+        let s = r
+            .data
+            .events
+            .iter()
+            .find(|e| e.record_type == "session")
+            .unwrap();
+        assert_eq!(s.model_name, "vendor/new-model");
+        assert_eq!(s.input_tokens, 300);
+        assert_eq!(s.output_tokens, 40);
+        assert_eq!(s.cache_read_tokens, 20);
+        assert_eq!(s.cache_creation_tokens, 5);
+        assert!((s.cost - 0.37).abs() < 0.01, "cost was {}", s.cost);
+    }
+
+    #[test]
+    fn checkpoints_files_are_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let line = turn("m1", "2026-03-01T09:00:05.000Z", "kimi-k2", 10, 1, 0, 0);
+        write_session(tmp.path(), "-p", "s1.jsonl", &format!("{HEADER}\n{line}\n"));
+        write_session(
+            tmp.path(),
+            "-p",
+            "s1.checkpoints.jsonl",
+            &format!(
+                "{}\n",
+                turn("c1", "2026-03-01T09:00:06.000Z", "kimi-k2", 999, 9, 0, 0)
+            ),
+        );
+        let src = CommandCodeSource::new(opts(tmp.path()));
+        let r = futures::executor::block_on(src.fetch()).unwrap();
+        let d: Vec<_> = r
+            .data
+            .events
+            .iter()
+            .filter(|e| e.record_type == "daily")
+            .collect();
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].input_tokens, 10);
     }
 
     #[test]
