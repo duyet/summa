@@ -589,6 +589,38 @@ mod tests {
     }
 
     #[test]
+    fn each_assistant_message_counts_exactly_once() {
+        let tmp = TempDir::new().unwrap();
+        let conn = db(tmp.path());
+        // Same message in both tables: 50 + 10 + 100 + 2 tokens, not double.
+        legacy(&conn, "msg_1", "ses_a", "assistant", OCT_8, 50);
+        current(&conn, "msg_1", "ses_a", "assistant", OCT_8, 50);
+        drop(conn);
+
+        let events = fetch_opencode_events(&opts(tmp.path())).unwrap();
+        assert_eq!(daily(&events)[0].total_tokens, 162);
+        assert_eq!(daily(&events)[0].entries, 1);
+        let s: Vec<_> = events.iter().filter(|e| e.record_type == "session").collect();
+        assert_eq!(s[0].total_tokens, 162);
+    }
+
+    /// Rows the ccusage companion wrote must be overwritten, not shadowed:
+    /// same key formula as parser::rows::breakdown_row.
+    #[test]
+    fn daily_dedup_key_matches_companion_formula() {
+        let tmp = TempDir::new().unwrap();
+        let conn = db(tmp.path());
+        legacy(&conn, "msg_1", "ses_a", "assistant", OCT_8, 50);
+        drop(conn);
+
+        let events = fetch_opencode_events(&opts(tmp.path())).unwrap();
+        assert_eq!(
+            daily(&events)[0].dedup_key,
+            make_dedup_key("opencode|m1|daily|2026-10-08|big-model|2026-10-08")
+        );
+    }
+
+    #[test]
     fn missing_data_dir_returns_no_rows() {
         let tmp = TempDir::new().unwrap();
         let events = fetch_opencode_events(&opts(&tmp.path().join("nope"))).unwrap();
