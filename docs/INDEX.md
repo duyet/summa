@@ -13,6 +13,7 @@
 - `docs/knowledge/cursor.md` — Cursor account-wide usage source (dashboard/Admin APIs, surface labels).
 - `docs/knowledge/grok-bot.md` — Grok Bot (x.ai) chat token source (`grok-bot`, own `--skip-grok-bot`, one owner per usage event).
 - `docs/knowledge/devin.md` — Devin CLI source (ATIF transcripts + `sessions.db`, token mapping, cost).
+- `docs/knowledge/opencode.md` — OpenCode source (legacy `message` + `session_message` tables, dedupe on message id, token mapping, cost).
 - `docs/knowledge/pi.md` — pi coding agent source (session JSONL, four usage entry types, fork dedup).
 - `docs/knowledge/fx.md` — fx (Vercel Labs) source (`~/.fx/usage.jsonl` ledger, billable `generation` facts only).
 - `docs/knowledge/command-code.md` — Command Code source (session JSONL, non-cached `inputTokens`, fork/clone dedup).
