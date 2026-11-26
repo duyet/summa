@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.5](https://github.com/duyet/summa/compare/v0.1.4...v0.1.5) (2026-11-26)
+
+
+### Features
+
+* **api:** D1 analytics mirror with d1-sync backfill and CI deploy ([#166](https://github.com/duyet/summa/issues/166)) ([6713442](https://github.com/duyet/summa/commit/6713442d78034487e0bb6ce815e666cd166c3739))
+* **cli:** import Command Code usage ([#141](https://github.com/duyet/summa/issues/141)) ([7226379](https://github.com/duyet/summa/commit/72263793b279069efb04f9bcf98177490fabb060))
+* **cli:** import Devin CLI usage ([90f537f](https://github.com/duyet/summa/commit/90f537f661996369c22956e2a67102a46201deb3))
+* **cli:** import grok-bot chat tokens as their own source ([#148](https://github.com/duyet/summa/issues/148)) ([3986437](https://github.com/duyet/summa/commit/3986437087677f8d5d8dd3e089f0c2d6f56f2e46))
+* **cli:** import pi and fx usage ([#138](https://github.com/duyet/summa/issues/138)) ([21f68dd](https://github.com/duyet/summa/commit/21f68dd2145c5ebb1b8b0cc8a73e5b251c51791f))
+* **cli:** read OpenCode usage natively from its SQLite storage ([#160](https://github.com/duyet/summa/issues/160)) ([4486fbc](https://github.com/duyet/summa/commit/4486fbc2c15a97247722ad84f9c7fe5b07018894))
+
+
+### Bug Fixes
+
+* **cli:** add OpenAI pricing, which was missing entirely ([#142](https://github.com/duyet/summa/issues/142)) ([d1b03b2](https://github.com/duyet/summa/commit/d1b03b279537bdb312b9d511efe8030b385e1d28))
+* **cli:** delete the per-run SQLite copies and read their WAL ([#159](https://github.com/duyet/summa/issues/159)) ([2ed1eaa](https://github.com/duyet/summa/commit/2ed1eaa50d8e27160fcb8d0d0c6cc112eb84160e))
+* **cli:** import hermes sessions with null model and fix stable backfill ([#155](https://github.com/duyet/summa/issues/155)) ([9ff915d](https://github.com/duyet/summa/commit/9ff915dd736aeff47536feb0bcd3c78b331957a7))
+* **cli:** install MotherDuck extensions from the default repo ([#151](https://github.com/duyet/summa/issues/151)) ([8121ae9](https://github.com/duyet/summa/commit/8121ae9b3e4613cca62fff6cc1f82b35467f7f4f))
+* **cli:** never leave the install path without a binary on update ([#161](https://github.com/duyet/summa/issues/161)) ([a33d263](https://github.com/duyet/summa/commit/a33d26300e476d65ae5b8ff81cef5ef468628345))
+* **cli:** read command-code usage and model from the top level of the entry ([#162](https://github.com/duyet/summa/issues/162)) ([ab6f14b](https://github.com/duyet/summa/commit/ab6f14b1b0a38e4b769d3736e2d4e5711d6bc954))
+* **cli:** refresh Claude and Gemini rates to current list prices ([#139](https://github.com/duyet/summa/issues/139)) ([dd97d2a](https://github.com/duyet/summa/commit/dd97d2a5ee547f113a70bdc1eb3e4a3343588b54))
+* **cli:** serialize ccusage npx spawns and hide the motherduck token ([#163](https://github.com/duyet/summa/issues/163)) ([4d26013](https://github.com/duyet/summa/commit/4d26013c33ca7e6a1cdcc74b47f9fb3911320176))
+* **cli:** stop cost distribution producing negative rows ([#140](https://github.com/duyet/summa/issues/140)) ([349c9c7](https://github.com/duyet/summa/commit/349c9c7519e1b3a844762d5acd9ae8bf49f268a1))
+* **cli:** stop pi being read twice ([#143](https://github.com/duyet/summa/issues/143)) ([7d3aa9f](https://github.com/duyet/summa/commit/7d3aa9fac33a6d7e64aef7e58c10ffe351229301))
+* **cli:** surface hub-rejected rows and hidden sink errors in telemetry ([#145](https://github.com/duyet/summa/issues/145)) ([763adf5](https://github.com/duyet/summa/commit/763adf5b793c20a147f90824a2ce9bdd38b29238))
+* **deps:** update all dependencies ([#165](https://github.com/duyet/summa/issues/165)) ([67bcad3](https://github.com/duyet/summa/commit/67bcad3fd7ac30cc0b271ad1b8c876c74996efb6))
+
 ## [0.1.4](https://github.com/duyet/summa/compare/v0.1.3...v0.1.4) (2026-09-24)
 
 
