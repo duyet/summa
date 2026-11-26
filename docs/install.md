@@ -91,7 +91,7 @@ summa import --verbose --days-back=2
 
 ## 5. Optional telemetry hub
 
-Hosted hub: [https://summa.duyet.net](https://summa.duyet.net). Put `telemetry_token` in `credentials.toml` and optional `[telemetry] endpoint`. `summa import` POSTs `/v1/ingest`. D1 is keys/accounts only; usage is ClickHouse + MotherDuck. See `docs/telemetry.md` and `apps/api/README.md`. Copy `.env.example` → `.env`.
+Hosted hub: [https://summa.duyet.net](https://summa.duyet.net). Put `telemetry_token` in `credentials.toml` and optional `[telemetry] endpoint`. `summa import` POSTs `/v1/ingest`. D1 holds keys/accounts plus a daily-row analytics mirror; usage is ClickHouse + MotherDuck. See `docs/telemetry.md` and `apps/api/README.md`. Copy `.env.example` → `.env`.
 
 Cron job: `summa update` then `summa import`. The job script logs update errors, reinstalls with `install.sh` when the binary is missing, and exits 127 if that fails.
 
