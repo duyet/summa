@@ -179,7 +179,7 @@ pub fn apply_config_to_env(cfg: &Config) {
 
 /// Run the full import pipeline from clap-parsed args.
 pub async fn run(args: ImportArgs, verbose: bool) -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    crate::util::load_dotenv();
 
     let mut args = args;
     let prepared = prepare_import(&args)?;

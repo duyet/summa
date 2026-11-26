@@ -54,7 +54,7 @@ Cargo workspace: `apps/cli` (Rust binary `summa`) and `apps/api` (Rust Cloudflar
 
 ```bash
 bun install
-cp .env.example .env
+cp .env.example .env.local   # CLI loads .env.local, then .env; real env vars win
 bun run build:cli    # cargo build --locked --bin summa
 bun run build:api    # cargo check -p summa-api --target wasm32-unknown-unknown
 bun run deploy:api   # wrangler deploy (worker-build)
