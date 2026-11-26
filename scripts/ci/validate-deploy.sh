@@ -255,7 +255,7 @@ rp_wf="$(cat .github/workflows/release-please.yml)"
 echo "$rp_wf" | grep -q 'cargo publish' || fail "release-please.yml missing cargo publish"
 echo "$rp_wf" | grep -qE 'cargo publish .* -p summa-import|-p summa-import .* cargo publish|publish --locked -p summa-import' \
   || fail "release-please.yml cargo publish must use -p summa-import"
-echo "$rp_wf" | grep -q 'release_created' || fail "release-please.yml publish must be gated on release_created"
+echo "$rp_wf" | grep -q 'releases_created' || fail "release-please.yml publish must be gated on releases_created (path packages prefix their outputs)"
 echo "$rp_wf" | grep -q 'cargo package' || fail "release-please.yml missing cargo package"
 echo "$rp_wf" | grep -qE 'package .* -p summa-import|-p summa-import' \
   || fail "release-please.yml cargo package must use -p summa-import"

@@ -4,6 +4,11 @@ on:
   push:
     branches: [master, main]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Publish this existing release tag to crates.io (e.g. v0.1.5); empty = only check for a release"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -14,9 +19,11 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
+      # Path-based packages (apps/cli) get prefixed outputs; the unprefixed
+      # release_created / tag_name are only set for a root package.
+      releases_created: ${{ steps.release.outputs.releases_created }}
+      tag_name: ${{ steps.release.outputs['apps/cli--tag_name'] }}
+      version: ${{ steps.release.outputs['apps/cli--version'] }}
     steps:
       - name: release-please
         id: release
@@ -32,7 +39,7 @@ jobs:
   publish-crates-io:
     name: Publish to crates.io
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: needs.release-please.outputs.releases_created == 'true' || inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,7 +47,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ inputs.tag || needs.release-please.outputs.tag_name }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
