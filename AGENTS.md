@@ -34,7 +34,7 @@ cargo run -- backfill-duckdb            # backfill DuckDB from ClickHouse
 git log --since='7 days ago' --no-merges --name-only --pretty=format:'--- %h %ad %s' --date=short
 ```
 
-Config: `~/.config/summa/config.toml` + `credentials.toml` (secrets separate). `.env` still overlays `CH_*` / `MOTHERDUCK_TOKEN` / `DUCKDB_PATH`.
+Config: `~/.config/summa/config.toml` + `credentials.toml` (secrets separate). `.env.local` then `.env` overlay `CH_*` / `MOTHERDUCK_TOKEN` / `DUCKDB_PATH` (first wins; real env vars beat both; `util::load_dotenv`).
 Default DuckDB: `~/.local/share/summa/summa.duckdb` (auto-created).
 Install: `curl -fsSL https://summa.duyet.net/install.sh | bash` (or GitHub raw `install.sh`). Env vars go on bash: `curl … | SUMMA_SETUP_CRON=1 bash`. Never `cargo build --release` on laptops or home Linux hosts (CI only).
 Scheduler: `summa cronjob install` (launchd / systemd user timer / crontab / loop). Installer: `SUMMA_SETUP_CRON=1` runs that after curl|bash.
