@@ -2333,7 +2333,7 @@ dependencies = [
 
 [[package]]
 name = "summa-import"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "assert-json-diff",
