@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/duyet/summa/compare/v0.1.5...v0.1.6) (2026-11-26)
+
+
+### Features
+
+* **cli:** load .env.local before .env ([#168](https://github.com/duyet/summa/issues/168)) ([82ff964](https://github.com/duyet/summa/commit/82ff96437622c9e528c91ad3edd03f817a3ae05e))
+
 ## [0.1.5](https://github.com/duyet/summa/compare/v0.1.4...v0.1.5) (2026-11-26)
 
 
