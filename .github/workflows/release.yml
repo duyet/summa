@@ -1,7 +1,7 @@
 name: Release
 
-# Build stripped binaries + optional crates.io publish when a GitHub Release
-# is published (release-please creates the release on merge of its PR).
+# Build stripped binaries for the beta channel and backfill stable release assets.
+# The crates.io publish lives in release-please.yml (see the note there).
 on:
   push:
     branches: [main, master]
@@ -201,36 +201,3 @@ jobs:
           echo "backfilled stable ${TAG}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-crates-io:
-    name: Publish to crates.io
-    runs-on: ubuntu-latest
-    needs: [build-binaries]
-    # Only on real GitHub Releases, and only when the token secret is set.
-    if: github.event_name == 'release'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: crates-io-publish
-
-      - name: cargo package -p summa-import (verify)
-        run: cargo package --locked -p summa-import --list | head -100
-
-      - name: Publish to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
-            echo "CARGO_REGISTRY_TOKEN not set — skipping crates.io publish"
-            echo "Add the secret under repo Settings → Secrets to enable."
-            exit 0
-          fi
-          cargo publish --locked -p summa-import

@@ -25,3 +25,41 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           # release-please PRs are merged manually (repo policy: never auto-merge).
+
+  # Lives here, not in release.yml: releases created with GITHUB_TOKEN never fire
+  # `release: published` workflows, so a job gated on that event never ran and
+  # crates.io stayed at 0.1.0. This runs in the same workflow that creates the release.
+  publish-crates-io:
+    name: Publish to crates.io
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: crates-io-publish
+
+      - name: cargo package -p summa-import (verify)
+        run: cargo package --locked -p summa-import --list > /dev/null
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error title=crates.io publish failed::CARGO_REGISTRY_TOKEN is not set. Run scripts/sync-github-secrets.sh."
+            exit 1
+          fi
+          cargo publish --locked -p summa-import
