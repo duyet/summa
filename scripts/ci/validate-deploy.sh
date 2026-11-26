@@ -16,8 +16,8 @@ bash -n apps/api/build.sh
 ok "bash -n install.sh run-import.sh apps/api/build.sh"
 
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -x install.sh run-import.sh apps/api/build.sh
-  ok "shellcheck install.sh run-import.sh apps/api/build.sh"
+  shellcheck -x install.sh run-import.sh apps/api/build.sh scripts/sync-github-secrets.sh
+  ok "shellcheck install.sh run-import.sh apps/api/build.sh scripts/sync-github-secrets.sh"
 else
   echo "skip: shellcheck not installed"
 fi
@@ -249,12 +249,17 @@ print("ok: release-please workspace package")
 PY
 
 rel="$(cat .github/workflows/release.yml)"
-echo "$rel" | grep -q 'cargo publish' || fail "release.yml missing cargo publish"
-echo "$rel" | grep -qE 'cargo publish .* -p summa-import|-p summa-import .* cargo publish|publish --locked -p summa-import' \
-  || fail "release.yml cargo publish must use -p summa-import"
-echo "$rel" | grep -q 'cargo package' || fail "release.yml missing cargo package"
-echo "$rel" | grep -qE 'package .* -p summa-import|-p summa-import' \
-  || fail "release.yml cargo package must use -p summa-import"
+# The crates.io publish runs in release-please.yml: releases created with
+# GITHUB_TOKEN never trigger `release: published` workflows.
+rp_wf="$(cat .github/workflows/release-please.yml)"
+echo "$rp_wf" | grep -q 'cargo publish' || fail "release-please.yml missing cargo publish"
+echo "$rp_wf" | grep -qE 'cargo publish .* -p summa-import|-p summa-import .* cargo publish|publish --locked -p summa-import' \
+  || fail "release-please.yml cargo publish must use -p summa-import"
+echo "$rp_wf" | grep -q 'release_created' || fail "release-please.yml publish must be gated on release_created"
+echo "$rp_wf" | grep -q 'cargo package' || fail "release-please.yml missing cargo package"
+echo "$rp_wf" | grep -qE 'package .* -p summa-import|-p summa-import' \
+  || fail "release-please.yml cargo package must use -p summa-import"
+! echo "$rel" | grep -q 'cargo publish' || fail "release.yml must not publish to crates.io (release event never fires)"
 echo "$rel" | grep -q -- '--bin summa' || fail "release.yml must build --bin summa"
 echo "$rel" | grep -q 'tag_name: beta' || fail "release.yml must publish rolling beta channel binaries"
 echo "$rel" | grep -q '.tar.gz.sha256' || fail "release.yml must publish .sha256 sidecars"

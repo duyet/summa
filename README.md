@@ -8,7 +8,7 @@ other agent usage into local DuckDB, optionally syncing to ClickHouse or MotherD
 |---|---|
 | **Binary** | `summa` |
 | **Crate** | [`summa-import`](https://crates.io/crates/summa-import) |
-| **Version** | 0.1.x |
+| **Version** | 0.1.x, see [releases](https://github.com/duyet/summa/releases) |
 | **License** | MIT |
 
 > GitHub repo is `duyet/summa`. Crate is `summa-import`
@@ -38,7 +38,7 @@ Installs `~/.local/bin/summa` from the latest GitHub Release that has a tarball,
 curl -fsSL https://summa.duyet.net/install.sh | SUMMA_SETUP_CRON=1 bash
 ```
 
-Env: `SUMMA_INSTALL_DIR`, `SUMMA_CHANNEL` (`beta` default, or `stable`), `SUMMA_VERSION` (`v0.1.1`), `SUMMA_DRY_RUN=1`. Then `summa update --beta|--stable` to switch channels, and `summa config --set update.mode=auto` for auto-updates. Full machine setup: [docs/install.md](docs/install.md).
+Env: `SUMMA_INSTALL_DIR`, `SUMMA_CHANNEL` (`beta` default, or `stable`), `SUMMA_VERSION` (`v0.1.4`), `SUMMA_DRY_RUN=1`. Then `summa update --beta|--stable` to switch channels, and `summa config --set update.mode=auto` for auto-updates. Full machine setup: [docs/install.md](docs/install.md).
 
 ### Cargo
 
@@ -121,6 +121,7 @@ summa import --skip-pi
 summa import --skip-fx
 summa import --skip-command-code
 cargo run -- backfill-duckdb
+summa d1-sync              # (re)fill the Worker's D1 analytics mirror
 ```
 
 ## Cron job
@@ -158,7 +159,7 @@ endpoint = "https://summa.duyet.net"
 telemetry_token = "summa_…"
 ```
 
-`summa import` POSTs `/v1/ingest` when a token is set. D1 stores API keys/accounts only; usage data is ClickHouse + MotherDuck. `GET /v1/analytics` and `/v1/analytics/summary` for [burn.duyet.net](https://burn.duyet.net).
+`summa import` POSTs `/v1/ingest` when a token is set. Usage rows go to ClickHouse and MotherDuck. D1 stores API keys/accounts plus a daily-row mirror, so `GET /v1/analytics` and `/v1/analytics/summary` for [burn.duyet.net](https://burn.duyet.net) read MotherDuck → D1 → ClickHouse. Refill the mirror with `summa d1-sync [--full]`.
 
 `summa serve` only pings the cloud hub (deprecated local bind). k8s/Hermes runs **import** as a client (`deploy/k8s/summa-sidecar.yaml`); sidebar iframe `https://summa.duyet.net`. See [`docs/telemetry.md`](docs/telemetry.md).
 
@@ -177,6 +178,8 @@ cargo package --locked -p summa-import
 cargo publish --locked -p summa-import   # needs CARGO_REGISTRY_TOKEN / cargo login
 ```
 
-- release-please + GitHub Release builds multi-arch `summa` binaries
-- crates.io publish gated on `CARGO_REGISTRY_TOKEN`
+- release-please opens the release PR; merging it by hand tags the release and builds multi-arch `summa` binaries
+- crates.io: `release-please.yml` runs `cargo publish -p summa-import` right after it creates a release, and fails if `CARGO_REGISTRY_TOKEN` is missing
+- Worker: the `deploy` job in `ci.yml` applies D1 migrations and runs `wrangler deploy` on every master push once all checks pass. It skips with a notice when `CLOUDFLARE_API_TOKEN` is unset
+- Secrets: put `CLOUDFLARE_API_TOKEN` (Workers Scripts Edit + D1 Edit), `CLOUDFLARE_ACCOUNT_ID` and `CARGO_REGISTRY_TOKEN` in `.env.local`, then `bash scripts/sync-github-secrets.sh` (`--dry-run` to preview)
 - See `CHANGELOG.md`
