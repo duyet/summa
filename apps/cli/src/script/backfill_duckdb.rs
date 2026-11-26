@@ -12,7 +12,7 @@ use std::time::Duration;
 /// Reads all rows from ClickHouse `ccusage_events` and writes them
 /// to the configured DuckDB path.
 pub fn run() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    crate::util::load_dotenv();
 
     let args: Vec<String> = env::args().collect();
     let verbose = args.contains(&"--verbose".into()) || args.contains(&"-v".into());

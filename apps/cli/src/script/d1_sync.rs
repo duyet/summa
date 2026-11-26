@@ -24,7 +24,7 @@ pub struct D1SyncArgs {
 }
 
 pub async fn run(args: D1SyncArgs) -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    crate::util::load_dotenv();
 
     let cfg = Config::load(args.config.as_deref())?;
     let duckdb_path = Config::resolve_duckdb_path(cfg.importer.duckdb_path.as_deref());

@@ -42,7 +42,7 @@ struct AppState {
 }
 
 pub async fn run(args: ServeArgs) -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    crate::util::load_dotenv();
     let cfg = Config::load(args.config.as_deref())?;
     apply_config_to_env(&cfg);
     let endpoint = cfg
